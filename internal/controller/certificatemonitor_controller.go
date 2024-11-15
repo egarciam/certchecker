@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -55,6 +56,7 @@ type CertificateMonitorReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.0/pkg/reconcile
 func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
+	log.Log.Info("RECONCILIANDO")
 
 	// TODO(user): your logic here
 	certMonitor := &monitoringv1alpha1.CertificateMonitor{}
@@ -66,38 +68,63 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	updatedStatuses := []monitoringv1alpha1.MonitoredCertificateStatus{}
 
-	for _, cert := range certMonitor.Spec.Certificates {
-		var status monitoringv1alpha1.MonitoredCertificateStatus
-		status.Name = cert.Name
-		if cert.Type == "internal" {
-			expiry, err := r.getInternalCertExpiry(ctx, cert.Namespace, cert.SecretName)
-			if err != nil {
-				log.Log.Error(err, "failed to get internal certificate expiry")
-				status.Status = "error"
-			} else {
-				status.Expiry = expiry.Format(time.RFC3339)
-				status.Status = getCertificateStatus(expiry)
-			}
-		} else if cert.Type == "external" {
-			expiry, err := r.getExternalCertExpiry(cert.URL)
-			if err != nil {
-				log.Log.Error(err, "failed to get external certificate expiry")
-				status.Status = "error"
-			} else {
-				status.Expiry = expiry.Format(time.RFC3339)
-				status.Status = getCertificateStatus(expiry)
-			}
+	if certMonitor.Spec.DiscoverInternal {
+		internalCerts, err := r.discoverInternalCerts(ctx)
+		if err != nil {
+			log.Log.Error(err, "failed to discover internal certs")
+		} else {
+			updatedStatuses = append(updatedStatuses, internalCerts...)
 		}
-		updatedStatuses = append(updatedStatuses, status)
 	}
 
-	certMonitor.Status.MonitoredCertificates = updatedStatuses
-	if err := r.Status().Update(ctx, certMonitor); err != nil {
+	// for _, cert := range certMonitor.Spec.Certificates {
+	// 	var status monitoringv1alpha1.MonitoredCertificateStatus
+	// 	status.Name = cert.Name
+	// 	if cert.Type == "internal" {
+	// 		expiry, err := r.getInternalCertExpiry(ctx, cert.Namespace, cert.SecretName)
+	// 		if err != nil {
+	// 			log.Log.Error(err, "failed to get internal certificate expiry")
+	// 			status.Status = "error"
+	// 		} else {
+	// 			status.Expiry = expiry.Format(time.RFC3339)
+	// 			status.Status = getCertificateStatus(expiry)
+	// 		}
+	// 	} else if cert.Type == "external" {
+	// 		expiry, err := r.getExternalCertExpiry(cert.URL)
+	// 		if err != nil {
+	// 			log.Log.Error(err, "failed to get external certificate expiry")
+	// 			status.Status = "error"
+	// 		} else {
+	// 			status.Expiry = expiry.Format(time.RFC3339)
+	// 			status.Status = getCertificateStatus(expiry)
+	// 		}
+	// 	}
+	// 	updatedStatuses = append(updatedStatuses, status)
+	// }
+
+	// certMonitor.Status.MonitoredCertificates = updatedStatuses
+	// if err := r.Status().Update(ctx, certMonitor); err != nil {
+	// 	log.Log.Error(err, "failed to update CertificateMonitor status")
+	// 	return ctrl.Result{}, err
+	// }
+
+	// Update the status with retry logic
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Fetch the latest version of the resource
+		if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
+			return err
+		}
+
+		// Update the status field
+		certMonitor.Status.MonitoredCertificates = updatedStatuses
+		return r.Status().Update(ctx, certMonitor)
+	})
+	if err != nil {
 		log.Log.Error(err, "failed to update CertificateMonitor status")
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: 24 * time.Hour}, nil
+	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 }
 
 // getInternalCertExpiry fetches the expiry date from a Kubernetes secret.
@@ -145,8 +172,49 @@ func getCertificateStatus(expiry time.Time) string {
 	return "valid"
 }
 
+// logic to search for kubernetes.io/tls secrets across namespaces.
+func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
+	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
+	_ = log.FromContext(ctx)
+	log.Log.Info("discoverInternalCerts")
+	// List all secrets of type kubernetes.io/tls
+	secretList := &corev1.SecretList{}
+	if err := r.List(ctx, secretList, client.MatchingFields{"type": "kubernetes.io/tls"}); err != nil {
+		log.Log.Error(err, err.Error())
+		return nil, err
+	}
+
+	for _, secret := range secretList.Items {
+		log.Log.Info(fmt.Sprintf("secret found: internal-%s-%s", secret.Namespace, secret.Name))
+		expiry, err := r.getInternalCertExpiry(ctx, secret.Namespace, secret.Name)
+		if err != nil {
+			log.Log.Error(err, err.Error())
+			continue // Handle error or log it
+		}
+
+		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
+			Name:   fmt.Sprintf("internal-%s-%s", secret.Namespace, secret.Name),
+			Status: getCertificateStatus(expiry),
+			Expiry: expiry.Format(time.RFC3339),
+		})
+	}
+
+	return certStatuses, nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *CertificateMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Add an index for the Secret type
+	if err := mgr.GetFieldIndexer().IndexField(context.TODO(), &corev1.Secret{}, "type", func(o client.Object) []string {
+		secret, ok := o.(*corev1.Secret)
+		if !ok {
+			return nil
+		}
+		return []string{string(secret.Type)}
+	}); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&monitoringv1alpha1.CertificateMonitor{}).
 		Complete(r)

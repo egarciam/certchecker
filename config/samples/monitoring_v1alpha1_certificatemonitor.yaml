@@ -10,3 +10,6 @@ metadata:
   name: certificatemonitor-sample
 spec:
   # TODO(user): Add fields here
+  # name: "first certificate EGMG"
+  # expiry: "13/11/2024"
+  discoverInternal: true

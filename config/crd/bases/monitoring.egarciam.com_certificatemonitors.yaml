@@ -40,28 +40,9 @@ spec:
           spec:
             description: CertificateMonitorSpec defines the desired state of CertificateMonitor
             properties:
-              certificates:
-                items:
-                  description: CertificateSpec defines the desired certificates to
-                    monitor.
-                  properties:
-                    name:
-                      type: string
-                    namespace:
-                      type: string
-                    secretName:
-                      type: string
-                    type:
-                      type: string
-                    url:
-                      type: string
-                  required:
-                  - name
-                  - type
-                  type: object
-                type: array
-            required:
-            - certificates
+              discoverInternal:
+                description: Certificates     []CertificateSpec `json:"certificates"`
+                type: boolean
             type: object
           status:
             description: CertificateMonitorStatus defines the observed state of CertificateMonitor

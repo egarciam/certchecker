@@ -37,7 +37,8 @@ type CertificateMonitorSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	Certificates []CertificateSpec `json:"certificates"`
+	// Certificates     []CertificateSpec `json:"certificates"`
+	DiscoverInternal bool `json:"discoverInternal,omitempty"`
 }
 
 // MonitoredCertificateStatus represents the status of a monitored certificate.
