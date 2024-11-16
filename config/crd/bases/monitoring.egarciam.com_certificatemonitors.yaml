@@ -59,10 +59,13 @@ spec:
                       type: string
                     name:
                       type: string
+                    namespace:
+                      type: string
                     status:
                       type: string
                   required:
                   - name
+                  - namespace
                   - status
                   type: object
                 type: array

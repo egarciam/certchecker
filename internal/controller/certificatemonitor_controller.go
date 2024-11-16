@@ -20,12 +20,12 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -41,6 +41,12 @@ type CertificateMonitorReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+const (
+	valid    = "valid"
+	expired  = "expired"
+	expiring = "expiring"
+)
+
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/finalizers,verbs=update
@@ -55,13 +61,13 @@ type CertificateMonitorReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.0/pkg/reconcile
 func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
-	log.Log.Info("RECONCILIANDO")
+	log := log.FromContext(context.Background())
+	log.Info("EN RECONCILIATION LOOP")
 
 	// TODO(user): your logic here
 	certMonitor := &monitoringv1alpha1.CertificateMonitor{}
 	if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
-		log.Log.Error(err, "unable to fetch CertificateMonitor")
+		log.Error(err, "unable to fetch CertificateMonitor")
 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -69,12 +75,21 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 	updatedStatuses := []monitoringv1alpha1.MonitoredCertificateStatus{}
 
 	if certMonitor.Spec.DiscoverInternal {
+		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "review certificates")
 		internalCerts, err := r.discoverInternalCerts(ctx)
 		if err != nil {
-			log.Log.Error(err, "failed to discover internal certs")
+			log.Error(err, "failed to discover internal certs")
 		} else {
 			updatedStatuses = append(updatedStatuses, internalCerts...)
 		}
+		certMonitor.Status.MonitoredCertificates = updatedStatuses
+		log.Info(fmt.Sprintf("%v", updatedStatuses))
+		if err := r.Status().Update(ctx, certMonitor); err != nil {
+			log.Error(err, "failed to update CertificateMonitor status")
+			return ctrl.Result{}, err
+		}
+	} else {
+		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "nothing would be done")
 	}
 
 	// for _, cert := range certMonitor.Spec.Certificates {
@@ -102,27 +117,21 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// 	updatedStatuses = append(updatedStatuses, status)
 	// }
 
-	// certMonitor.Status.MonitoredCertificates = updatedStatuses
-	// if err := r.Status().Update(ctx, certMonitor); err != nil {
+	// Update the status with retry logic
+	// err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	// 	// Fetch the latest version of the resource
+	// 	if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
+	// 		return err
+	// 	}
+
+	// 	// Update the status field
+	// 	certMonitor.Status.MonitoredCertificates = updatedStatuses
+	// 	return r.Status().Update(ctx, certMonitor)
+	// })
+	// if err != nil {
 	// 	log.Log.Error(err, "failed to update CertificateMonitor status")
 	// 	return ctrl.Result{}, err
 	// }
-
-	// Update the status with retry logic
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		// Fetch the latest version of the resource
-		if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
-			return err
-		}
-
-		// Update the status field
-		certMonitor.Status.MonitoredCertificates = updatedStatuses
-		return r.Status().Update(ctx, certMonitor)
-	})
-	if err != nil {
-		log.Log.Error(err, "failed to update CertificateMonitor status")
-		return ctrl.Result{}, err
-	}
 
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 }
@@ -175,27 +184,43 @@ func getCertificateStatus(expiry time.Time) string {
 // logic to search for kubernetes.io/tls secrets across namespaces.
 func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
 	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
-	_ = log.FromContext(ctx)
-	log.Log.Info("discoverInternalCerts")
+	log := log.FromContext(context.Background())
+	log.Info("discoverInternalCerts")
 	// List all secrets of type kubernetes.io/tls
 	secretList := &corev1.SecretList{}
 	if err := r.List(ctx, secretList, client.MatchingFields{"type": "kubernetes.io/tls"}); err != nil {
-		log.Log.Error(err, err.Error())
+		log.Error(err, err.Error())
 		return nil, err
 	}
 
 	for _, secret := range secretList.Items {
-		log.Log.Info(fmt.Sprintf("secret found: internal-%s-%s", secret.Namespace, secret.Name))
+		log.Info(fmt.Sprintf("secret found: internal-%s-%s", secret.Namespace, secret.Name))
 		expiry, err := r.getInternalCertExpiry(ctx, secret.Namespace, secret.Name)
 		if err != nil {
-			log.Log.Error(err, err.Error())
+			log.Error(err, err.Error())
 			continue // Handle error or log it
+		}
+		tmp := monitoringv1alpha1.MonitoredCertificateStatus{
+			Name:      fmt.Sprintf("internal-%s-%s", secret.Namespace, secret.Name),
+			Status:    getCertificateStatus(expiry),
+			Expiry:    expiry.Format(time.RFC3339),
+			Namespace: secret.Namespace,
+		}
+
+		switch tmp.Expiry {
+		case "valid":
+			log.Info(fmt.Sprintf("certStatus: %v", tmp))
+		case "expiring":
+			log.Info(fmt.Sprintf("certStatus: %v", tmp))
+		case "expired":
+			log.Error(errors.New("Expired certificate"), fmt.Sprintf("certStatus: %v", tmp))
 		}
 
 		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
-			Name:   fmt.Sprintf("internal-%s-%s", secret.Namespace, secret.Name),
-			Status: getCertificateStatus(expiry),
-			Expiry: expiry.Format(time.RFC3339),
+			Name:      fmt.Sprintf("internal-%s-%s", secret.Namespace, secret.Name),
+			Status:    getCertificateStatus(expiry),
+			Expiry:    expiry.Format(time.RFC3339),
+			Namespace: secret.Namespace,
 		})
 	}
 
