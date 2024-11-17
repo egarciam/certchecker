@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -42,12 +41,13 @@ type CertificateMonitorReconciler struct {
 }
 
 const (
-	valid    = "valid"
-	expired  = "expired"
-	expiring = "expiring"
+	valid    string = "valid"
+	expired  string = "expired"
+	expiring string = "expiring"
 )
 
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/finalizers,verbs=update
 
@@ -83,7 +83,7 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 			updatedStatuses = append(updatedStatuses, internalCerts...)
 		}
 		certMonitor.Status.MonitoredCertificates = updatedStatuses
-		log.Info(fmt.Sprintf("%v", updatedStatuses))
+		// log.Info(fmt.Sprintf("%v", updatedStatuses))
 		if err := r.Status().Update(ctx, certMonitor); err != nil {
 			log.Error(err, "failed to update CertificateMonitor status")
 			return ctrl.Result{}, err
@@ -173,12 +173,12 @@ func (r *CertificateMonitorReconciler) getExternalCertExpiry(url string) (time.T
 func getCertificateStatus(expiry time.Time) string {
 	now := time.Now()
 	if now.After(expiry) {
-		return "expired"
+		return expired
 	}
 	if now.Add(30 * 24 * time.Hour).After(expiry) {
-		return "expiring"
+		return expiring
 	}
-	return "valid"
+	return valid
 }
 
 // logic to search for kubernetes.io/tls secrets across namespaces.
@@ -194,26 +194,20 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 	}
 
 	for _, secret := range secretList.Items {
-		log.Info(fmt.Sprintf("secret found: internal-%s-%s", secret.Namespace, secret.Name))
+		// log.Info(fmt.Sprintf("secret found: internal-%s-%s", secret.Namespace, secret.Name))
 		expiry, err := r.getInternalCertExpiry(ctx, secret.Namespace, secret.Name)
 		if err != nil {
 			log.Error(err, err.Error())
 			continue // Handle error or log it
 		}
-		tmp := monitoringv1alpha1.MonitoredCertificateStatus{
-			Name:      fmt.Sprintf("internal-%s-%s", secret.Namespace, secret.Name),
-			Status:    getCertificateStatus(expiry),
-			Expiry:    expiry.Format(time.RFC3339),
-			Namespace: secret.Namespace,
-		}
 
-		switch tmp.Expiry {
-		case "valid":
-			log.Info(fmt.Sprintf("certStatus: %v", tmp))
-		case "expiring":
-			log.Info(fmt.Sprintf("certStatus: %v", tmp))
-		case "expired":
-			log.Error(errors.New("Expired certificate"), fmt.Sprintf("certStatus: %v", tmp))
+		switch getCertificateStatus(expiry) {
+		case valid:
+			log.Info("Valid certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
+		case expiring:
+			log.Info("Expiring certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339), "days left", (expiry.Sub(time.Now())).Hours()/24)
+		case expired:
+			log.Info("Expired certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
 		}
 
 		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
