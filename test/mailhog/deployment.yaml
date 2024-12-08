@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailhog
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailhog
+  template:
+    metadata:
+      labels:
+        app: mailhog
+    spec:
+      containers:
+      - name: mailhog
+        image: mailhog/mailhog
+        ports:
+        - containerPort: 1025 # SMTP port
+        - containerPort: 8025 # Web UI port
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailhog-service
+  namespace: default
+spec:
+  ports:
+  - port: 1025
+    targetPort: 1025
+    name: smtp
+  - port: 8025
+    targetPort: 8025
+    name: http
+  selector:
+    app: mailhog

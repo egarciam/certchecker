@@ -1,5 +1,7 @@
 
 # Binaries for programs and plugins
+*.crt
+*.key
 *.exe
 *.exe~
 *.dll
