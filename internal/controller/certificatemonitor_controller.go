@@ -51,8 +51,8 @@ const (
 	expiring string = "expiring"
 )
 
-//+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors;configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/finalizers,verbs=update
 
@@ -313,7 +313,7 @@ func (r *CertificateMonitorReconciler) sendMails(subject, body, name string, rec
 func SendMail(subject, body, recipient string) error {
 	// Internal SMTP server details
 	// smtpHost := "mailhog-service.default.svc.cluster.local" // Internal mail server service
-	smtpHost := "mailhog-service"
+	smtpHost := "mailhog-service.default.svc.cluster.local"
 	smtpPort := 1025 // SMTP port (MailHog default)
 
 	// Create the email
