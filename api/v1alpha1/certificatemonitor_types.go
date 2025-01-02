@@ -40,6 +40,7 @@ type CertificateMonitorSpec struct {
 	// Certificates     []CertificateSpec `json:"certificates"`
 	DiscoverInternal bool `json:"discoverInternal,omitempty"`
 	SendMail         bool `json:"sendMail,omitempty"`
+	CheckInterval    int  `json:"checkInterval,omitempty"`
 }
 
 // MonitoredCertificateStatus represents the status of a monitored certificate.

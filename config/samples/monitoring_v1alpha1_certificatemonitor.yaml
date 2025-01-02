@@ -12,3 +12,5 @@ spec:
   # TODO(user): Add fields here
   discoverInternal: true
   sendMail: true
+  checkInterval: 5
+

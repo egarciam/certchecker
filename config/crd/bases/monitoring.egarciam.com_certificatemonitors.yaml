@@ -40,6 +40,8 @@ spec:
           spec:
             description: CertificateMonitorSpec defines the desired state of CertificateMonitor
             properties:
+              checkInterval:
+                type: integer
               discoverInternal:
                 description: Certificates     []CertificateSpec `json:"certificates"`
                 type: boolean
