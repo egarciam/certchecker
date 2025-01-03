@@ -82,11 +82,11 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	if certMonitor.Spec.DiscoverInternal {
 		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados activada")
-		internalCerts, err := r.discoverInternalCerts(ctx, certMonitor)
+		internalCertsStatus, err := r.discoverInternalCerts(ctx, certMonitor)
 		if err != nil {
 			log.Error(err, "failed to discover internal certs")
 		} else {
-			updatedStatuses = append(updatedStatuses, internalCerts...)
+			updatedStatuses = append(updatedStatuses, internalCertsStatus...)
 		}
 		certMonitor.Status.MonitoredCertificates = updatedStatuses
 		// log.Info(fmt.Sprintf("%v", updatedStatuses))
@@ -199,6 +199,7 @@ func getCertificateStatus(expiry time.Time) string {
 func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context, certmonitor *monitoringv1alpha1.CertificateMonitor) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
 	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
 	var recipients []string
+	var expirySummary string
 	totals := struct {
 		total    int
 		expired  int
@@ -213,7 +214,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 		log.Error(err, err.Error())
 		return nil, err
 	}
-
+	//si no hay secrets coincidentes salimos
 	if len(secretList.Items) == 0 {
 		log.Info("discoverInternalCerts", "certificados:", len(secretList.Items), "No certs to review", "Exit")
 		return certStatuses, nil
@@ -231,44 +232,38 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 		}
 	}
 
+	//Secret Loop
 	for _, secret := range secretList.Items {
 		expiry, err := r.getInternalCertExpiry(ctx, secret.Namespace, secret.Name)
 		if err != nil {
 			log.Error(err, err.Error())
 			continue // Handle error or log it
 		}
+		flagMail := false
 		totals.total++
 
 		switch getCertificateStatus(expiry) {
 		case valid:
 			totals.valid++
-			log.Info("Valid certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
+			expirySummary = "Valid certificate"
 		case expiring:
+			flagMail = true
 			totals.expiring++
-			log.Info("Expiring certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339), "days left", (expiry.Sub(time.Now())).Hours()/24)
-			if certmonitor.Spec.SendMail {
-				subject := fmt.Sprintf("Certificate Expiring: %s-%s", secret.Namespace, secret.Name)
-				body := fmt.Sprintf("The certificate %s-%s is expiring on %s.", secret.Namespace, secret.Name, expiry.Format(time.RFC3339))
-				if err := r.sendMails(subject, body, secret.Name, recipients); err != nil {
-					log.Error(err, "failed to send email for expiring certificate", "name", secret.Name)
-				} else {
-					log.Info("Email sent for expiring certificate", "name", secret.Name)
-				}
-			}
+			expirySummary = "Expiring certificate"
 		case expired:
+			flagMail = true
 			totals.expired++
-			log.Info("Expired certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
-			if certmonitor.Spec.SendMail {
-				subject := fmt.Sprintf("Certificate Expired: %s", secret.Name)
-				body := fmt.Sprintf("The certificate %s has expired on %s.", secret.Name, expiry.Format(time.RFC3339))
-				if err := r.sendMails(subject, body, secret.Name, recipients); err != nil {
-					log.Error(err, "failed to send email for expired certificate", "name", secret.Name)
-				} else {
-					log.Info("Email sent for expired certificate", "name", secret.Name)
-				}
-			}
+			expirySummary = "Expired certificate"
+		}
+		//mostramos log
+		log.Info(expirySummary, "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
+
+		//Send mail?
+		if flagMail && certmonitor.Spec.SendMail {
+			r.sendMails(expiry, &secret, recipients)
 		}
 
+		//Update status
 		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
 			Name:      fmt.Sprintf("internal-%s-%s", secret.Namespace, secret.Name),
 			Status:    getCertificateStatus(expiry),
@@ -319,16 +314,28 @@ func (r *CertificateMonitorReconciler) getRecipients(ctx context.Context) ([]str
 }
 
 // funcion para enviar los correos a la lista de recipients
-func (r *CertificateMonitorReconciler) sendMails(subject, body, name string, recipients []string) error {
+func (r *CertificateMonitorReconciler) sendMails(expiry time.Time, secret *corev1.Secret, recipients []string) error {
 	log := log.FromContext(context.Background())
+	var subject, body string
+
+	//Prepare subect and body of mails
+	switch getCertificateStatus(expiry) {
+	case expiring:
+		subject = fmt.Sprintf("Certificate Expiring: %s-%s", secret.Namespace, secret.Name)
+		body = fmt.Sprintf("The certificate %s-%s is expiring on %s.", secret.Namespace, secret.Name, expiry.Format(time.RFC3339))
+	case expired:
+		subject = fmt.Sprintf("Certificate Expired: %s-%s", secret.Namespace, secret.Name)
+		body = fmt.Sprintf("The certificate %s-%s has expired on %s.", secret.Namespace, secret.Name, expiry.Format(time.RFC3339))
+	}
+
+	//Send mails
 	for _, recipient := range recipients {
 		// Send the email
-		// if err := email.SendMail(subject, body, recipient); err != nil {
 		if err := SendMail(subject, body, recipient); err != nil {
 			log.Error(err, "failed to send email", "recipient", recipient)
 			return err
 		} else {
-			log.Info("Email sent successfully", "recipient", recipient, "certificate", name)
+			log.Info("Email sent successfully", "recipient", recipient, "certificate", secret.Name, "namespace", secret.Namespace)
 		}
 	}
 	return nil
