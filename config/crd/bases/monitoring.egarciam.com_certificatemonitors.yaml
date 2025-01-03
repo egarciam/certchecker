@@ -41,11 +41,15 @@ spec:
             description: CertificateMonitorSpec defines the desired state of CertificateMonitor
             properties:
               checkInterval:
+                default: 86400
+                minimum: 0
                 type: integer
               discoverInternal:
+                default: false
                 description: Certificates     []CertificateSpec `json:"certificates"`
                 type: boolean
               sendMail:
+                default: false
                 type: boolean
             type: object
           status:

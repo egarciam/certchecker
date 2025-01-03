@@ -26,11 +26,15 @@ metadata:
   name: mailhog-service
   namespace: default
 spec:
+  type: NodePort
+  # externalTrafficPolicy: Local
   ports:
   - port: 1025
+    nodePort: 31025
     targetPort: 1025
     name: smtp
   - port: 8025
+    nodePort: 31026
     targetPort: 8025
     name: http
   selector:

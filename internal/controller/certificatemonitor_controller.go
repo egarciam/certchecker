@@ -81,7 +81,7 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 	updatedStatuses := []monitoringv1alpha1.MonitoredCertificateStatus{}
 
 	if certMonitor.Spec.DiscoverInternal {
-		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "review certificates")
+		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados activada")
 		internalCerts, err := r.discoverInternalCerts(ctx, certMonitor)
 		if err != nil {
 			log.Error(err, "failed to discover internal certs")
@@ -96,7 +96,7 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 	} else {
-		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "nothing would be done")
+		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados desactivada")
 	}
 
 	// for _, cert := range certMonitor.Spec.Certificates {
@@ -144,7 +144,7 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if checkinterval == 0 {
 		checkinterval = defaultcheckinterval
 	}
-	log.Info("checkinterval", fmt.Sprintf("%v", checkinterval), "Periodo de actualizacion")
+	log.Info("checkinterval", fmt.Sprintf("%v", checkinterval), "Periodo de actualizacion en segundos")
 	//return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	return ctrl.Result{RequeueAfter: time.Duration(checkinterval) * time.Second}, nil
 
@@ -199,6 +199,12 @@ func getCertificateStatus(expiry time.Time) string {
 func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context, certmonitor *monitoringv1alpha1.CertificateMonitor) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
 	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
 	var recipients []string
+	totals := struct {
+		total    int
+		expired  int
+		expiring int
+		valid    int
+	}{0, 0, 0, 0}
 	log := log.FromContext(context.Background())
 	log.Info("discoverInternalCerts")
 	// List all secrets of type kubernetes.io/tls
@@ -207,6 +213,12 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 		log.Error(err, err.Error())
 		return nil, err
 	}
+
+	if len(secretList.Items) == 0 {
+		log.Info("discoverInternalCerts", "certificados:", len(secretList.Items), "No certs to review", "Exit")
+		return certStatuses, nil
+	}
+
 	//Enviamos correo?
 	if certmonitor.Spec.SendMail {
 		log.Info("SendMail", fmt.Sprintf("%v", certmonitor.Spec.SendMail), "Envio de correo activo - habra que enviar correo con estado de los certificados")
@@ -225,15 +237,18 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 			log.Error(err, err.Error())
 			continue // Handle error or log it
 		}
+		totals.total++
 
 		switch getCertificateStatus(expiry) {
 		case valid:
+			totals.valid++
 			log.Info("Valid certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
 		case expiring:
+			totals.expiring++
 			log.Info("Expiring certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339), "days left", (expiry.Sub(time.Now())).Hours()/24)
 			if certmonitor.Spec.SendMail {
-				subject := fmt.Sprintf("Certificate Expiring: %s", secret.Name)
-				body := fmt.Sprintf("The certificate %s is expiring on %s.", secret.Name, expiry.Format(time.RFC3339))
+				subject := fmt.Sprintf("Certificate Expiring: %s-%s", secret.Namespace, secret.Name)
+				body := fmt.Sprintf("The certificate %s-%s is expiring on %s.", secret.Namespace, secret.Name, expiry.Format(time.RFC3339))
 				if err := r.sendMails(subject, body, secret.Name, recipients); err != nil {
 					log.Error(err, "failed to send email for expiring certificate", "name", secret.Name)
 				} else {
@@ -241,6 +256,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 				}
 			}
 		case expired:
+			totals.expired++
 			log.Info("Expired certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
 			if certmonitor.Spec.SendMail {
 				subject := fmt.Sprintf("Certificate Expired: %s", secret.Name)
@@ -260,7 +276,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 			Namespace: secret.Namespace,
 		})
 	}
-
+	log.Info("Cert Summary", "total", totals.total, "validos", totals.valid, "expirados", totals.expired, "expiring", totals.expiring)
 	return certStatuses, nil
 }
 

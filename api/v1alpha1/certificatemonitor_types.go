@@ -38,9 +38,13 @@ type CertificateMonitorSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// Certificates     []CertificateSpec `json:"certificates"`
+	// +kubebuilder:default=false
 	DiscoverInternal bool `json:"discoverInternal,omitempty"`
-	SendMail         bool `json:"sendMail,omitempty"`
-	CheckInterval    int  `json:"checkInterval,omitempty"`
+	// +kubebuilder:default=false
+	SendMail bool `json:"sendMail,omitempty"`
+	// +kubebuilder:default=86400
+	// +kubebuilder:validation:Minimum=0
+	CheckInterval int `json:"checkInterval,omitempty"`
 }
 
 // MonitoredCertificateStatus represents the status of a monitored certificate.
