@@ -33,6 +33,7 @@ import (
 // }
 
 // CertificateMonitorSpec defines the desired state of CertificateMonitor
+
 type CertificateMonitorSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
@@ -66,6 +67,7 @@ type CertificateMonitorStatus struct {
 //+kubebuilder:subresource:status
 
 // CertificateMonitor is the Schema for the certificatemonitors API
+// +kubebuilder:resource:shortName=cm;cms
 type CertificateMonitor struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

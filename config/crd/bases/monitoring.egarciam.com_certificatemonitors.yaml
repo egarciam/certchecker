@@ -11,6 +11,9 @@ spec:
     kind: CertificateMonitor
     listKind: CertificateMonitorList
     plural: certificatemonitors
+    shortNames:
+    - cm
+    - cms
     singular: certificatemonitor
   scope: Namespaced
   versions:
@@ -38,7 +41,6 @@ spec:
           metadata:
             type: object
           spec:
-            description: CertificateMonitorSpec defines the desired state of CertificateMonitor
             properties:
               checkInterval:
                 default: 86400
