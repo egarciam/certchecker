@@ -50,6 +50,10 @@ spec:
                 default: false
                 description: Certificates     []CertificateSpec `json:"certificates"`
                 type: boolean
+              emailcooldown:
+                default: 86400
+                minimum: 0
+                type: integer
               sendMail:
                 default: false
                 type: boolean
@@ -65,7 +69,11 @@ spec:
                   description: MonitoredCertificateStatus represents the status of
                     a monitored certificate.
                   properties:
+                    emailSent:
+                      type: boolean
                     expiry:
+                      type: string
+                    lastEmailSentAt:
                       type: string
                     name:
                       type: string
@@ -74,6 +82,8 @@ spec:
                     status:
                       type: string
                   required:
+                  - emailSent
+                  - lastEmailSentAt
                   - name
                   - namespace
                   - status

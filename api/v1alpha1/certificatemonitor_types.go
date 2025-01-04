@@ -46,14 +46,19 @@ type CertificateMonitorSpec struct {
 	// +kubebuilder:default=86400
 	// +kubebuilder:validation:Minimum=0
 	CheckInterval int `json:"checkInterval,omitempty"`
+	// +kubebuilder:default=86400
+	// +kubebuilder:validation:Minimum=0
+	EmailCoolDown int `json:"emailcooldown,omitempty"`
 }
 
 // MonitoredCertificateStatus represents the status of a monitored certificate.
 type MonitoredCertificateStatus struct {
-	Name      string `json:"name"`
-	Status    string `json:"status"` // "valid", "expiring", "expired"
-	Expiry    string `json:"expiry,omitempty"`
-	Namespace string `json:"namespace"`
+	Name            string `json:"name"`
+	Status          string `json:"status"` // "valid", "expiring", "expired"
+	Expiry          string `json:"expiry,omitempty"`
+	Namespace       string `json:"namespace"`
+	EmailSent       bool   `json:"emailSent"` // Add a flag
+	LastEmailSentAt string `json:"lastEmailSentAt"`
 }
 
 // CertificateMonitorStatus defines the observed state of CertificateMonitor

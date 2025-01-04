@@ -239,7 +239,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 			log.Error(err, err.Error())
 			continue // Handle error or log it
 		}
-		flagMail := false
+		shouldSendMail := false
 		totals.total++
 
 		status := getCertificateStatus(expiry)
@@ -248,29 +248,57 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 			totals.valid++
 			certStatus = "Valid certificate"
 		case expiring:
-			flagMail = true
+			shouldSendMail = true
 			totals.expiring++
 			certStatus = "Expiring certificate"
 		case expired:
-			flagMail = true
+			shouldSendMail = true
 			totals.expired++
 			certStatus = "Expired certificate"
 		}
 		//mostramos log
-		log.Info(certStatus, "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
+		log.Info(certStatus, "name", secret.Namespace+"."+secret.Name, "expiry date", expiry.Format(time.RFC3339))
 
-		//Send mail?
-		if flagMail && certmonitor.Spec.SendMail {
-			r.sendMails(expiry, status, &secret, recipients)
+		// Check if email was already sent
+		emailAlreadySent := false
+		for _, monitoredCert := range certmonitor.Status.MonitoredCertificates {
+			if monitoredCert.Name == fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name) && monitoredCert.EmailSent {
+				emailAlreadySent = true
+				continue
+			}
 		}
 
-		//Update status
-		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
-			Name:      fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
-			Status:    status,
-			Expiry:    expiry.Format(time.RFC3339),
-			Namespace: secret.Namespace,
-		})
+		//Send mail?
+		if certmonitor.Spec.SendMail && shouldSendMail && !emailAlreadySent {
+			if err := r.sendMails(expiry, status, &secret, recipients); err == nil {
+				//status with mail sent merked
+				certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
+					Name:            fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
+					Status:          status,
+					Expiry:          expiry.Format(time.RFC3339),
+					Namespace:       secret.Namespace,
+					EmailSent:       true,
+					LastEmailSentAt: time.Now().Format(time.RFC3339),
+				})
+
+			} else {
+				//Status without mail sent mark
+				certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
+					Name:      fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
+					Status:    status,
+					Expiry:    expiry.Format(time.RFC3339),
+					Namespace: secret.Namespace,
+				})
+			}
+		}
+
+		// //Update status
+		// certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
+		// 	Name:      fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
+		// 	Status:    status,
+		// 	Expiry:    expiry.Format(time.RFC3339),
+		// 	Namespace: secret.Namespace,
+		// })
 	}
 	log.Info("Cert Summary", "total", totals.total, "validos", totals.valid, "expirados", totals.expired, "expiring", totals.expiring)
 	return certStatuses, nil
