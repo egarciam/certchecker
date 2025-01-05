@@ -12,8 +12,8 @@ spec:
     listKind: CertificateMonitorList
     plural: certificatemonitors
     shortNames:
-    - cm
-    - cms
+    - cmt
+    - cmts
     singular: certificatemonitor
   scope: Namespaced
   versions:

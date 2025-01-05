@@ -9,12 +9,34 @@ import (
 	"net/http"
 	"time"
 
+	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
 	"gopkg.in/gomail.v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// Funcion para determinar si hay que enviar o reenviar un correo en funcion
+// del cooldowntiming (para no saturar)
+func emailShouldBeSent(monitoredCert monitoringv1alpha1.MonitoredCertificateStatus, emailCooldownHours time.Duration) bool {
+	log := log.FromContext(context.Background())
+	if !monitoredCert.EmailSent {
+		return true
+	}
+
+	//el ultimo correo enviado no se puede obtener del status asi que enviamos por si acaso
+	lastEmailSentAt, err := time.Parse(time.RFC3339, monitoredCert.LastEmailSentAt)
+	if err != nil {
+		// If parsing fails, assume email wasn't recently sent
+		return true
+	}
+
+	// Check if the cooldown period has elapsed. En negativo, si el tiempo se ha excedido hay que enviar de nuevo
+	result := time.Now().Before(lastEmailSentAt.Add(emailCooldownHours * time.Second))
+	log.Info("emailShouldBeSent", "result", time.Now().Before(lastEmailSentAt.Add(emailCooldownHours*time.Second)), "cooldown due", lastEmailSentAt.Add(emailCooldownHours*time.Second))
+	return result
+}
 
 func (r *CertificateMonitorReconciler) getInternalCertExpiry(ctx context.Context, namespace, secretName string) (time.Time, error) {
 	secret := &corev1.Secret{}

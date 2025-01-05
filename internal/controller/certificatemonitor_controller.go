@@ -65,7 +65,6 @@ const (
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.0/pkg/reconcile
-
 func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(context.Background())
 	log.Info("EN RECONCILIATION LOOP")
@@ -75,6 +74,12 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 		log.Error(err, "unable to fetch CertificateMonitor")
 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	//Si no esta especificada la busqueda salimos y esperamos a que se actualice el spec
+	if !certMonitor.Spec.DiscoverInternal {
+		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados NO activada.Modifique el objeto para iniciar la reconciliacion")
+		return ctrl.Result{}, nil
 	}
 
 	updatedStatuses := []monitoringv1alpha1.MonitoredCertificateStatus{}
@@ -224,27 +229,6 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 	}
 	log.Info("Cert Summary", "total", totals.total, "validos", totals.valid, "expirados", totals.expired, "expiring", totals.expiring)
 	return certStatuses, nil
-}
-
-// Funcion para determinar si hay que enviar o reenviar un correo en funcion
-// del cooldowntiming (para no saturar)
-func emailShouldBeSent(monitoredCert monitoringv1alpha1.MonitoredCertificateStatus, emailCooldownHours time.Duration) bool {
-	log := log.FromContext(context.Background())
-	if !monitoredCert.EmailSent {
-		return true
-	}
-
-	//el ultimo correo enviado no se puede obtener del status asi que enviamos por si acaso
-	lastEmailSentAt, err := time.Parse(time.RFC3339, monitoredCert.LastEmailSentAt)
-	if err != nil {
-		// If parsing fails, assume email wasn't recently sent
-		return true
-	}
-
-	// Check if the cooldown period has elapsed. En negativo, si el tiempo se ha excedido hay que enviar de nuevo
-	result := time.Now().Before(lastEmailSentAt.Add(emailCooldownHours * time.Second))
-	log.Info("emailShouldBeSent", "result", time.Now().Before(lastEmailSentAt.Add(emailCooldownHours*time.Second)), "cooldown due", lastEmailSentAt.Add(emailCooldownHours*time.Second))
-	return result
 }
 
 // SetupWithManager sets up the controller with the Manager.

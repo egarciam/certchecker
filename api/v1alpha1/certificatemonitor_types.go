@@ -72,7 +72,7 @@ type CertificateMonitorStatus struct {
 //+kubebuilder:subresource:status
 
 // CertificateMonitor is the Schema for the certificatemonitors API
-// +kubebuilder:resource:shortName=cm;cms
+// +kubebuilder:resource:shortName=cmt;cmts
 type CertificateMonitor struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
