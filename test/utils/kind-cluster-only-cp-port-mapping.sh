@@ -39,11 +39,11 @@ nodes:
   extraPortMappings:
   - containerPort: 31025
     hostPort: 1025
-    # listenAddress: 127.0.0.1
+    listenAddress: 127.0.0.1
     protocol: TCP
   - containerPort: 31026
     hostPort: 8025
-    # listenAddress: 127.0.0.1
+    listenAddress: 127.0.0.1
     protocol: TCP
 #- role: worker
 #- role: worker

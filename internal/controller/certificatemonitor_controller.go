@@ -28,9 +28,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"time"
 
@@ -91,7 +95,23 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 		updatedStatuses = append(updatedStatuses, internalCertsStatus...)
 		certMonitor.Status.MonitoredCertificates = updatedStatuses
 
-		if err := r.Status().Update(ctx, certMonitor); err != nil {
+		// if err := r.Status().Update(ctx, certMonitor); err != nil {
+		// 	log.Error(err, "failed to update CertificateMonitor status")
+		// 	return ctrl.Result{}, err
+		// }
+
+		// Update the status with retry logic
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			// Fetch the latest version of the resource
+			if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
+				return err
+			}
+
+			// Update the status field
+			certMonitor.Status.MonitoredCertificates = updatedStatuses
+			return r.Status().Update(ctx, certMonitor)
+		})
+		if err != nil {
 			log.Error(err, "failed to update CertificateMonitor status")
 			return ctrl.Result{}, err
 		}
@@ -318,8 +338,19 @@ func (r *CertificateMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	}
 	r.ConfigMapName = "email-recipients-config" // ConfigMap name with email recipients
 
+	// Predicate to ignore status updates
+	statusUpdatePredicate := predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			// Only reconcile if the spec or metadata changes
+			oldResource := e.ObjectOld.DeepCopyObject().(*monitoringv1alpha1.CertificateMonitor)
+			newResource := e.ObjectNew.DeepCopyObject().(*monitoringv1alpha1.CertificateMonitor)
+			return oldResource.Generation != newResource.Generation
+		},
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&monitoringv1alpha1.CertificateMonitor{}).
+		For(&monitoringv1alpha1.CertificateMonitor{},
+			builder.WithPredicates(statusUpdatePredicate)).
 		Complete(r)
 }
 
