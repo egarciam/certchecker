@@ -11,6 +11,6 @@ metadata:
 spec:
   # TODO(user): Add fields here
   discoverInternal: true
-  sendMail: true
-  checkInterval: 5
+  sendMail: false
+  checkInterval: 15
 

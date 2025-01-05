@@ -54,11 +54,11 @@ type CertificateMonitorSpec struct {
 // MonitoredCertificateStatus represents the status of a monitored certificate.
 type MonitoredCertificateStatus struct {
 	Name            string `json:"name"`
-	Status          string `json:"status"` // "valid", "expiring", "expired"
-	Expiry          string `json:"expiry,omitempty"`
+	Status          string `json:"status"`           // "valid", "expiring", "expired"
+	Expiry          string `json:"expiry,omitempty"` //Fecha de validez
 	Namespace       string `json:"namespace"`
-	EmailSent       bool   `json:"emailSent"` // Add a flag
-	LastEmailSentAt string `json:"lastEmailSentAt"`
+	EmailSent       bool   `json:"emailSent"`       // Add a flag
+	LastEmailSentAt string `json:"lastEmailSentAt"` //Fecha de envio de ultimo correo
 }
 
 // CertificateMonitorStatus defines the observed state of CertificateMonitor
