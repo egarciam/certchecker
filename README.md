@@ -1,5 +1,5 @@
-# check-certs
-The purpose of this project is to create a CRD to hold the validity of secrets of type tls in a k8s cluster to check expiry date and, depending on threshold, la
+# certchecker
+The purpose of this project is to create a CRD to hold the validity of secrets of type `kubernetes.io/tls` in a k8s cluster to check expiry date and, depending on threshold, send a warning mail.
 
 ## Description
 // TODO(user): An in-depth paragraph about your project and overview of use
@@ -112,4 +112,4 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-# certchecker
+
