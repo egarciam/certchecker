@@ -1,5 +1,5 @@
 # check-certs
-// TODO(user): Add simple overview of use/purpose
+The purpose of this project is to create a CRD to hold the validity of secrets of type tls in a k8s cluster to check expiry date and, depending on threshold, la
 
 ## Description
 // TODO(user): An in-depth paragraph about your project and overview of use
