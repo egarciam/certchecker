@@ -82,36 +82,30 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados activada")
 	updatedStatuses := []monitoringv1alpha1.MonitoredCertificateStatus{}
+	internalCertsStatus, err := r.discoverInternalCerts(ctx, certMonitor)
+	if err != nil {
+		log.Error(err, "failed to discover internal certs")
+		return ctrl.Result{}, err
+	}
+	updatedStatuses = append(updatedStatuses, internalCertsStatus...)
+	certMonitor.Status.MonitoredCertificates = updatedStatuses
 
-	if certMonitor.Spec.DiscoverInternal {
-		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados activada")
-		internalCertsStatus, err := r.discoverInternalCerts(ctx, certMonitor)
-		if err != nil {
-			log.Error(err, "failed to discover internal certs")
-			return ctrl.Result{}, err
+	// Update the status with retry logic
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Fetch the latest version of the resource
+		if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
+			return err
 		}
-		updatedStatuses = append(updatedStatuses, internalCertsStatus...)
+
+		// Update the status field
 		certMonitor.Status.MonitoredCertificates = updatedStatuses
-
-		// Update the status with retry logic
-		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			// Fetch the latest version of the resource
-			if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
-				return err
-			}
-
-			// Update the status field
-			certMonitor.Status.MonitoredCertificates = updatedStatuses
-			return r.Status().Update(ctx, certMonitor)
-		})
-		if err != nil {
-			log.Error(err, "failed to update CertificateMonitor status")
-			return ctrl.Result{}, err
-		}
-
-	} else {
-		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados desactivada")
+		return r.Status().Update(ctx, certMonitor)
+	})
+	if err != nil {
+		log.Error(err, "failed to update CertificateMonitor status")
+		return ctrl.Result{}, err
 	}
 
 	checkinterval := certMonitor.Spec.CheckInterval
@@ -167,7 +161,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 			log.Error(err, err.Error())
 			continue // Handle error or log it
 		}
-		shouldSendMail := false
+		shouldSendMail := true // a priori lo enviamos (caso de certificados nuevos o que sean antiguos y se haya excedido el coolDown)
 		totals.total++
 
 		status := getCertificateStatus(expiry)
@@ -175,58 +169,85 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 		case valid:
 			totals.valid++
 			certStatus = "Valid certificate"
+			continue // Pasamos a procesar el siguiente certificado
 		case expiring:
-			shouldSendMail = true
 			totals.expiring++
 			certStatus = "Expiring certificate"
 		case expired:
-			shouldSendMail = true
 			totals.expired++
 			certStatus = "Expired certificate"
 		}
 		//mostramos log
 		log.Info(certStatus, "name", secret.Namespace+"."+secret.Name, "expiry date", expiry.Format(time.RFC3339))
 
+		//Si llegamos aqui son certificados chungos
 		// Check if email was already sent
-		emailAlreadySent := false
+		// emailAlreadySent := false
+
 		var tmpStatus monitoringv1alpha1.MonitoredCertificateStatus
 		for _, monitoredCert := range certmonitor.Status.MonitoredCertificates {
 			if monitoredCert.Name == fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name) && monitoredCert.EmailSent {
 				tmpStatus = monitoredCert
-				if emailShouldBeSent(monitoredCert, time.Duration(certmonitor.Spec.EmailCoolDown)) {
-					emailAlreadySent = true
+				if shouldSendMail = emailShouldBeSent(monitoredCert, time.Duration(certmonitor.Spec.EmailCoolDown)); !shouldSendMail {
 					break
 				}
 			}
 		}
+		var certstatus monitoringv1alpha1.MonitoredCertificateStatus
+		//Actualizamos el status
+		if shouldSendMail {
+			//Hay que actaulizar las fechas
+			certstat := monitoringv1alpha1.MonitoredCertificateStatus{
+				Name:            fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
+				Status:          status,
+				Expiry:          expiry.Format(time.RFC3339),
+				Namespace:       secret.Namespace,
+				EmailSent:       certmonitor.Spec.SendMail && shouldSendMail,
+				LastEmailSentAt: getLastEmailSentAtValue(certmonitor.Spec.SendMail, certmonitor.Spec.SendMail && shouldSendMail), /*time.Now().Format(time.RFC3339) || nil*/
+			}
+			certstatus = certstat
+		} else {
+			certstatus = tmpStatus
+		}
 
 		//Send mail?
-		if certmonitor.Spec.SendMail && shouldSendMail && !emailAlreadySent {
-			if err := r.sendMails(expiry, status, &secret, &recipients); err == nil {
-				//status with mail sent merked
-				certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
-					Name:            fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
-					Status:          status,
-					Expiry:          expiry.Format(time.RFC3339),
-					Namespace:       secret.Namespace,
-					EmailSent:       true,
-					LastEmailSentAt: time.Now().Format(time.RFC3339),
-				})
-
-			} else {
-				//Status without mail sent mark
-				// recuperamos la info del estado del certmonitor
-				certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
-					Name:            fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
-					Status:          status,
-					Expiry:          expiry.Format(time.RFC3339),
-					Namespace:       secret.Namespace,
-					EmailSent:       tmpStatus.EmailSent,
-					LastEmailSentAt: tmpStatus.LastEmailSentAt,
-				})
+		if certmonitor.Spec.SendMail && shouldSendMail {
+			err := r.sendMails(expiry, status, &secret, &recipients)
+			if err != nil {
+				log.Error(err, "Error al enviar el correo para el CERTIFICADO")
 			}
 		}
+
+		//Update status
+		certStatuses = append(certStatuses, certstatus)
+
+		// //Send mail?
+		// if certmonitor.Spec.SendMail && shouldSendMail /*&& !emailAlreadySent*/ {
+		// 	if err := r.sendMails(expiry, status, &secret, &recipients); err == nil {
+		// 		//status with mail sent merked
+		// 		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
+		// 			Name:            fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
+		// 			Status:          status,
+		// 			Expiry:          expiry.Format(time.RFC3339),
+		// 			Namespace:       secret.Namespace,
+		// 			EmailSent:       true,
+		// 			LastEmailSentAt: time.Now().Format(time.RFC3339),
+		// 		})
+
+		// 	} else {
+		// 		//Status without mail sent mark
+		// 		// recuperamos la info del estado del certmonitor
+		// 		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
+		// 			Name:            fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
+		// 			Status:          status,
+		// 			Expiry:          expiry.Format(time.RFC3339),
+		// 			Namespace:       secret.Namespace,
+		// 			EmailSent:       tmpStatus.EmailSent,
+		// 			LastEmailSentAt: tmpStatus.LastEmailSentAt,
+		// 		})
+		// 	}
 	}
+	//}
 	log.Info("Cert Summary", "total", totals.total, "validos", totals.valid, "expirados", totals.expired, "expiring", totals.expiring)
 	return certStatuses, nil
 }

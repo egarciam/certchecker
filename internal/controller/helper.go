@@ -19,6 +19,10 @@ import (
 
 // Funcion para determinar si hay que enviar o reenviar un correo en funcion
 // del cooldowntiming (para no saturar)
+// Hay que enviar el correo si:
+// El certificado esta expirado y
+//   - no se ha enviado. lastMailSentAt no informado
+//   - Se ha enviado y se ha excedido el cooldowntime
 func emailShouldBeSent(monitoredCert monitoringv1alpha1.MonitoredCertificateStatus, emailCooldownHours time.Duration) bool {
 	log := log.FromContext(context.Background())
 	if !monitoredCert.EmailSent {
@@ -27,15 +31,22 @@ func emailShouldBeSent(monitoredCert monitoringv1alpha1.MonitoredCertificateStat
 
 	//el ultimo correo enviado no se puede obtener del status asi que enviamos por si acaso
 	lastEmailSentAt, err := time.Parse(time.RFC3339, monitoredCert.LastEmailSentAt)
-	if err != nil {
+	if monitoredCert.LastEmailSentAt != "" && err != nil {
 		// If parsing fails, assume email wasn't recently sent
 		return true
 	}
 
 	// Check if the cooldown period has elapsed. En negativo, si el tiempo se ha excedido hay que enviar de nuevo
-	result := time.Now().Before(lastEmailSentAt.Add(emailCooldownHours * time.Second))
-	log.Info("emailShouldBeSent", "result", time.Now().Before(lastEmailSentAt.Add(emailCooldownHours*time.Second)), "cooldown due", lastEmailSentAt.Add(emailCooldownHours*time.Second))
+	result := !time.Now().Before(lastEmailSentAt.Add(emailCooldownHours * time.Second))
+	log.Info("emailShouldBeSent", "result", result, "cooldown due", lastEmailSentAt.Add(emailCooldownHours*time.Second))
 	return result
+}
+
+func getLastEmailSentAtValue(sendMail bool, emailSent bool) string {
+	if sendMail && emailSent {
+		return time.Now().Format(time.RFC3339)
+	}
+	return ""
 }
 
 func (r *CertificateMonitorReconciler) getInternalCertExpiry(ctx context.Context, namespace, secretName string) (time.Time, error) {
