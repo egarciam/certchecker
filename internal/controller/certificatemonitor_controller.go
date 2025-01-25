@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -66,8 +67,10 @@ const (
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.0/pkg/reconcile
 func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+
 	log := log.FromContext(context.Background())
-	log.Info("EN RECONCILIATION LOOP")
+	klog.Info("EN RECONCILIATION LOOP")
+	klog.Info("Prepare to repel boarders for fist time")
 
 	certMonitor := &monitoringv1alpha1.CertificateMonitor{}
 	if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
