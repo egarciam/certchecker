@@ -24,13 +24,13 @@ import (
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // CertificateSpec defines the desired certificates to monitor.
-type CertificateSpec struct {
-	Name       string `json:"name"`
-	Type       string `json:"type"` // "internal" or "external"
-	SecretName string `json:"secretName,omitempty"`
-	Namespace  string `json:"namespace,omitempty"`
-	URL        string `json:"url,omitempty"`
-}
+// type CertificateSpec struct {
+// 	Name       string `json:"name"`
+// 	Type       string `json:"type"` // "internal" or "external"
+// 	SecretName string `json:"secretName,omitempty"`
+// 	Namespace  string `json:"namespace,omitempty"`
+// 	URL        string `json:"url,omitempty"`
+// }
 
 // CertificateMonitorSpec defines the desired state of CertificateMonitor
 type CertificateMonitorSpec struct {
@@ -39,6 +39,7 @@ type CertificateMonitorSpec struct {
 
 	// Certificates     []CertificateSpec `json:"certificates"`
 	DiscoverInternal bool `json:"discoverInternal,omitempty"`
+	SendMail         bool `json:"sendMail,omitempty"`
 }
 
 // MonitoredCertificateStatus represents the status of a monitored certificate.

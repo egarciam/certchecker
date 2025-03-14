@@ -43,6 +43,8 @@ spec:
               discoverInternal:
                 description: Certificates     []CertificateSpec `json:"certificates"`
                 type: boolean
+              sendMail:
+                type: boolean
             type: object
           status:
             description: CertificateMonitorStatus defines the observed state of CertificateMonitor
