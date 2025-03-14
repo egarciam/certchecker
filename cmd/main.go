@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
+	"egarciam.com/checkcert/internal/config"
 	"egarciam.com/checkcert/internal/controller"
 	//+kubebuilder:scaffold:imports
 )
@@ -66,6 +67,11 @@ func main() {
 		"If set the metrics endpoint is served securely")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+
+	config.CertDirs = flag.String("cert-dirs", "/etc/kubernetes/pki:/etc/ssl/certs", "OS list separator separated list of directories to scan for certificates")
+	config.DefaultWarningDays = flag.Int("warning-expiration-days", 30, "Number of days to consider a certificate as expiring soon")
+	config.DefaultCheckIntervalMinutes = flag.Int("check-interval-minutes", 10080, "Checking interval in minutes. Defaul 7 days (10.080 min)")
+	config.Debug = flag.Bool("debug", false, "Enable debug logging")
 	opts := zap.Options{
 		Development: true,
 	}

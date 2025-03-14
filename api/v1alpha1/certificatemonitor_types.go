@@ -39,12 +39,15 @@ type CertificateMonitorSpec struct {
 
 	// Certificates     []CertificateSpec `json:"certificates"`
 	DiscoverInternal bool `json:"discoverInternal,omitempty"`
+	DiscoverExternal bool `json:"discoverExternal,omitempty"`
 	SendMail         bool `json:"sendMail,omitempty"`
 }
 
 // MonitoredCertificateStatus represents the status of a monitored certificate.
 type MonitoredCertificateStatus struct {
 	Name      string `json:"name"`
+	Type string `json:"type"` //"internal", "external"
+	Path string `json:"path"` // cluster location | host path
 	Status    string `json:"status"` // "valid", "expiring", "expired"
 	Expiry    string `json:"expiry,omitempty"`
 	Namespace string `json:"namespace"`

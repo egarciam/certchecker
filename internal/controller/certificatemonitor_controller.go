@@ -18,24 +18,22 @@ package controller
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/json"
-	"encoding/pem"
+	// "crypto/x509"
+
+	// "encoding/pem"
 	"fmt"
-	"net/http"
+	// "net/http"
+
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"time"
-
 	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
 	// email "egarciam.com/checkcert/lib/email"
-	"gopkg.in/gomail.v2"
 )
 
 // CertificateMonitorReconciler reconciles a CertificateMonitor object
@@ -81,11 +79,11 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	if certMonitor.Spec.DiscoverInternal {
 		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "review certificates")
-		internalCerts, err := r.discoverInternalCerts(ctx, certMonitor.Spec.SendMail)
+		certStatuses, err := r.discoverInternalCerts(ctx, certMonitor.Spec.SendMail)
 		if err != nil {
 			log.Error(err, "failed to discover internal certs")
 		} else {
-			updatedStatuses = append(updatedStatuses, internalCerts...)
+			updatedStatuses = append(updatedStatuses, certStatuses...)
 		}
 		certMonitor.Status.MonitoredCertificates = updatedStatuses
 		// log.Info(fmt.Sprintf("%v", updatedStatuses))
@@ -142,120 +140,6 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 }
 
-// getInternalCertExpiry fetches the expiry date from a Kubernetes secret.
-func (r *CertificateMonitorReconciler) getInternalCertExpiry(ctx context.Context, namespace, secretName string) (time.Time, error) {
-	secret := &corev1.Secret{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, secret); err != nil {
-		return time.Time{}, err
-	}
-
-	certData := secret.Data["tls.crt"]
-	block, _ := pem.Decode(certData)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return time.Time{}, fmt.Errorf("failed to decode PEM block")
-	}
-
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return time.Time{}, err
-	}
-
-	return cert.NotAfter, nil
-}
-
-// getExternalCertExpiry fetches the expiry date from an external HTTPS endpoint.
-func (r *CertificateMonitorReconciler) getExternalCertExpiry(url string) (time.Time, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return time.Time{}, err
-	}
-	defer resp.Body.Close()
-
-	cert := resp.TLS.PeerCertificates[0]
-	return cert.NotAfter, nil
-}
-
-// getCertificateStatus determines if a certificate is valid, expiring, or expired.
-func getCertificateStatus(expiry time.Time) string {
-	now := time.Now()
-	if now.After(expiry) {
-		return expired
-	}
-	if now.Add(30 * 24 * time.Hour).After(expiry) {
-		return expiring
-	}
-	return valid
-}
-
-// logic to search for kubernetes.io/tls secrets across namespaces.
-func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context, sendMail bool) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
-	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
-	var recipients []string
-	log := log.FromContext(context.Background())
-	log.Info("discoverInternalCerts")
-	// List all secrets of type kubernetes.io/tls
-	secretList := &corev1.SecretList{}
-	if err := r.List(ctx, secretList, client.MatchingFields{"type": "kubernetes.io/tls"}); err != nil {
-		log.Error(err, err.Error())
-		return nil, err
-	}
-	//Enviamos correo?
-	if sendMail {
-		log.Info("SendMail", fmt.Sprintf("%v", sendMail), "Envio de correo activo - habra que enviar correo con estado de los certificados")
-		var err error
-		recipients, err = r.getRecipients(ctx)
-		if err != nil {
-			log.Error(err, "Failed to get recipients")
-		} else {
-			log.Info("Recipients fetched successfully", "recipients", recipients)
-		}
-	}
-
-	for _, secret := range secretList.Items {
-		expiry, err := r.getInternalCertExpiry(ctx, secret.Namespace, secret.Name)
-		if err != nil {
-			log.Error(err, err.Error())
-			continue // Handle error or log it
-		}
-
-		switch getCertificateStatus(expiry) {
-		case valid:
-			log.Info("Valid certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
-		case expiring:
-			log.Info("Expiring certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339), "days left", (expiry.Sub(time.Now())).Hours()/24)
-			if sendMail {
-				subject := fmt.Sprintf("Certificate Expiring: %s", secret.Name)
-				body := fmt.Sprintf("The certificate %s is expiring on %s.", secret.Name, expiry.Format(time.RFC3339))
-				if err := r.sendMails(subject, body, secret.Name, recipients); err != nil {
-					log.Error(err, "failed to send email for expiring certificate", "name", secret.Name)
-				} else {
-					log.Info("Email sent for expiring certificate", "name", secret.Name)
-				}
-			}
-		case expired:
-			log.Info("Expired certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
-			if sendMail {
-				subject := fmt.Sprintf("Certificate Expired: %s", secret.Name)
-				body := fmt.Sprintf("The certificate %s has expired on %s.", secret.Name, expiry.Format(time.RFC3339))
-				if err := r.sendMails(subject, body, secret.Name, recipients); err != nil {
-					log.Error(err, "failed to send email for expired certificate", "name", secret.Name)
-				} else {
-					log.Info("Email sent for expired certificate", "name", secret.Name)
-				}
-			}
-		}
-
-		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
-			Name:      fmt.Sprintf("internal-%s-%s", secret.Namespace, secret.Name),
-			Status:    getCertificateStatus(expiry),
-			Expiry:    expiry.Format(time.RFC3339),
-			Namespace: secret.Namespace,
-		})
-	}
-
-	return certStatuses, nil
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *CertificateMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Add an index for the Secret type
@@ -273,62 +157,4 @@ func (r *CertificateMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&monitoringv1alpha1.CertificateMonitor{}).
 		Complete(r)
-}
-
-// funcion para obtener la lista de recipients del config map
-func (r *CertificateMonitorReconciler) getRecipients(ctx context.Context) ([]string, error) {
-	// Parse email recipients
-	log := log.FromContext(context.Background())
-	// Fetch the ConfigMap with email recipients
-	var configMap corev1.ConfigMap
-	if err := r.Get(ctx, types.NamespacedName{Name: r.ConfigMapName, Namespace: "default"}, &configMap); err != nil {
-		log.Error(err, "unable to fetch ConfigMap for email recipients")
-		return nil, err
-	}
-
-	var recipients []string
-	if err := json.Unmarshal([]byte(configMap.Data["emails"]), &recipients); err != nil {
-		log.Error(err, "unable to parse email recipients from ConfigMap")
-		return nil, err
-	}
-	return recipients, nil
-}
-
-// funcion para enviar los correos a la lista de recipients
-func (r *CertificateMonitorReconciler) sendMails(subject, body, name string, recipients []string) error {
-	log := log.FromContext(context.Background())
-	for _, recipient := range recipients {
-		// Send the email
-		// if err := email.SendMail(subject, body, recipient); err != nil {
-		if err := SendMail(subject, body, recipient); err != nil {
-			log.Error(err, "failed to send email", "recipient", recipient)
-			return err
-		} else {
-			log.Info("Email sent successfully", "recipient", recipient, "certificate", name)
-		}
-	}
-	return nil
-}
-
-func SendMail(subject, body, recipient string) error {
-	// Internal SMTP server details
-	// smtpHost := "mailhog-service.default.svc.cluster.local" // Internal mail server service
-	smtpHost := "mailhog-service"
-	smtpPort := 1025 // SMTP port (MailHog default)
-
-	// Create the email
-	m := gomail.NewMessage()
-	m.SetHeader("From", "no-reply@example.com") // Sender address
-	m.SetHeader("To", recipient)                // Recipient address
-	m.SetHeader("Subject", subject)             // Email subject
-	m.SetBody("text/plain", body)               // Email body
-
-	// Set up the SMTP server
-	d := gomail.NewDialer(smtpHost, smtpPort, "", "") // No authentication required for MailHog
-
-	// Send the email
-	if err := d.DialAndSend(m); err != nil {
-		return fmt.Errorf("failed to send email: %w", err)
-	}
-	return nil
 }
