@@ -81,31 +81,21 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 			continue // Handle error or log it
 		}
 
-		switch GetCertificateStatus(expiry) {
+		status := GetCertificateStatus(expiry)
+		switch status {
 		case valid:
 			log.Info("Valid certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
 		case expiring:
-			log.Info("Expiring certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339), "days left", (expiry.Sub(time.Now())).Hours()/24)
-			if sendMail {
-				subject := fmt.Sprintf("Certificate Expiring: %s", secret.Name)
-				body := fmt.Sprintf("The certificate %s is expiring on %s.", secret.Name, expiry.Format(time.RFC3339))
-				if err := r.sendMails(subject, body, secret.Name, recipients); err != nil {
-					log.Error(err, "failed to send email for expiring certificate", "name", secret.Name)
-				} else {
-					log.Info("Email sent for expiring certificate", "name", secret.Name)
-				}
-			}
 		case expired:
-			log.Info("Expired certificate", "name", secret.Name, "expiry date", expiry.Format(time.RFC3339))
+			log.Info("Certificate", "status", status, "name", secret.Name, "expiry date", expiry.Format(time.RFC3339), "days left", (expiry.Sub(time.Now())).Hours()/24)
 			if sendMail {
-				subject := fmt.Sprintf("Certificate Expired: %s", secret.Name)
-				body := fmt.Sprintf("The certificate %s has expired on %s.", secret.Name, expiry.Format(time.RFC3339))
-				if err := r.sendMails(subject, body, secret.Name, recipients); err != nil {
-					log.Error(err, "failed to send email for expired certificate", "name", secret.Name)
+				if err := r.sendMails(status, secret.Name, expiry, recipients); err != nil {
+					log.Error(err, "email failed", "certificate", secret.Name, "status", status)
 				} else {
-					log.Info("Email sent for expired certificate", "name", secret.Name)
+					log.Info("Email sent for certificate", "name", secret.Name, "status", status)
 				}
 			}
+
 		}
 
 		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
@@ -120,24 +110,25 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 }
 
 // func checkCerts Logicto check external certificates
-func (r *CertificateMonitorReconciler) checkCerts(certDirs []string, clientset *kubernetes.Clientset, nodeName string) {
+func (r *CertificateMonitorReconciler) discoverExternalCerts(certDirs []string, clientset *kubernetes.Clientset, nodeName string) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
+	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
 	for _, dir := range certDirs {
 		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if *config.Debug {
 				klog.InfoS("Checking ", "file", path)
 			}
-			return checkCertificate(path, info, err, clientset, nodeName)
+			return r.checkCertificate(path, info, err, clientset, nodeName, certStatuses)
 		})
 		if err != nil {
 			klog.Infof("Error scanning certificates in %s: %v", dir, err)
 		}
 	}
-	return
+	return certStatuses, nil
 }
 
 // func checkCertificare Logic to check particular certificate
 // TODO posiblemenete duplicada con GetCertificateStatus en discover-helper.go
-func checkCertificate(path string, info os.FileInfo, err error, clientset *kubernetes.Clientset, nodeName string) error {
+func (r *CertificateMonitorReconciler) checkCertificate(path string, info os.FileInfo, err error, clientset *kubernetes.Clientset, nodeName string, certstatus []monitoringv1alpha1.MonitoredCertificateStatus) error {
 	if err != nil {
 		return err
 	}
@@ -177,15 +168,16 @@ func checkCertificate(path string, info os.FileInfo, err error, clientset *kuber
 	}
 
 	klog.InfoS("Certificate control:", "certificate", path, "status", status, "node", nodeName, "expiry-date", expiry, "days-remaining", daysRemaining)
-	certExpiryGauge.WithLabelValues(status, nodeName, path).Set(daysRemaining)
+	//	certExpiryGauge.WithLabelValues(status, nodeName, path).Set(daysRemaining)
 
-	return annotateNode(clientset, nodeName, path, status, expiry)
+	return r.annotateNode(clientset, nodeName, path, status, expiry)
 }
 
-func annotateNode(clientset *kubernetes.Clientset, nodeName, certPath, status string, expiry time.Time) error {
-	node, err := clientset.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
-	if err != nil {
-		klog.Infof("Failed to get node %s: %v", nodeName, err)
+func (r *CertificateMonitorReconciler) annotateNode(clientset *kubernetes.Clientset, nodeName, certPath, status string, expiry time.Time) error {
+
+	node := &corev1.Node{}
+	if err := r.Get(context.TODO(), client.ObjectKey{Name: nodeName}, node); err != nil {
+		klog.ErrorS(err, "Failed to fetch node", "node", nodeName)
 		return err
 	}
 
@@ -196,7 +188,7 @@ func annotateNode(clientset *kubernetes.Clientset, nodeName, certPath, status st
 	node.Annotations["cert-status-"+filepath.Base(certPath)] = status
 	node.Annotations["cert-expiry-"+filepath.Base(certPath)] = expiry.Format(time.RFC3339)
 
-	_, err = clientset.CoreV1().Nodes().Update(context.TODO(), node, metav1.UpdateOptions{})
+	_, err := clientset.CoreV1().Nodes().Update(context.TODO(), node, metav1.UpdateOptions{})
 	if err != nil {
 		klog.Infof("Failed to update node annotation for %s: %v", certPath, err)
 	}

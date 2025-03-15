@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"egarciam.com/checkcert/internal/email"
 	corev1 "k8s.io/api/core/v1"
@@ -30,8 +32,11 @@ func (r *CertificateMonitorReconciler) getRecipients(ctx context.Context) ([]str
 }
 
 // funcion para enviar los correos a la lista de recipients
-func (r *CertificateMonitorReconciler) sendMails(subject, body, name string, recipients []string) error {
+func (r *CertificateMonitorReconciler) sendMails(status, name string, expiry time.Time, recipients []string) error {
 	log := log.FromContext(context.Background())
+	log.Info(status, "certificate", "name", name, "expiry date", expiry.Format(time.RFC3339))
+	subject := fmt.Sprintf("Certificate %s is %s", name, status)
+	body := fmt.Sprintf("The certificate %s is %s on %s.", name, status, expiry.Format(time.RFC3339))
 	for _, recipient := range recipients {
 		// Send the email
 		// if err := email.SendMail(subject, body, recipient); err != nil {

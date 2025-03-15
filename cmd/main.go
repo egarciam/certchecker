@@ -24,6 +24,7 @@ import (
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -46,6 +47,8 @@ var (
 )
 
 func init() {
+	klog.InitFlags(nil) //Revisar si aplica
+	klog.Info("Starting Node Certificate Checker")
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(monitoringv1alpha1.AddToScheme(scheme))
@@ -71,7 +74,7 @@ func main() {
 	config.CertDirs = flag.String("cert-dirs", "/etc/kubernetes/pki:/etc/ssl/certs", "OS list separator separated list of directories to scan for certificates")
 	config.DefaultWarningDays = flag.Int("warning-expiration-days", 30, "Number of days to consider a certificate as expiring soon")
 	config.DefaultCheckIntervalMinutes = flag.Int("check-interval-minutes", 10080, "Checking interval in minutes. Defaul 7 days (10.080 min)")
-	config.Debug = flag.Bool("debug", false, "Enable debug logging")
+	config.Debug = flag.Bool("debug", true, "Enable debug logging")
 	opts := zap.Options{
 		Development: true,
 	}

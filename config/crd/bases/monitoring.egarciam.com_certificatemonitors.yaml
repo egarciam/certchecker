@@ -40,6 +40,8 @@ spec:
           spec:
             description: CertificateMonitorSpec defines the desired state of CertificateMonitor
             properties:
+              discoverExternal:
+                type: boolean
               discoverInternal:
                 description: Certificates     []CertificateSpec `json:"certificates"`
                 type: boolean
@@ -63,12 +65,18 @@ spec:
                       type: string
                     namespace:
                       type: string
+                    path:
+                      type: string
                     status:
+                      type: string
+                    type:
                       type: string
                   required:
                   - name
                   - namespace
+                  - path
                   - status
+                  - type
                   type: object
                 type: array
             required:

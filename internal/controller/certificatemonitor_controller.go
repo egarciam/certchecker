@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"path/filepath"
+
 	// "crypto/x509"
 
 	// "encoding/pem"
@@ -28,11 +30,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
+	"egarciam.com/checkcert/internal/config"
 	// email "egarciam.com/checkcert/lib/email"
 )
 
@@ -51,6 +55,7 @@ const (
 
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/finalizers,verbs=update
 
@@ -71,12 +76,11 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 	certMonitor := &monitoringv1alpha1.CertificateMonitor{}
 	if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
 		log.Error(err, "unable to fetch CertificateMonitor")
-
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	updatedStatuses := []monitoringv1alpha1.MonitoredCertificateStatus{}
-
+	// var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
 	if certMonitor.Spec.DiscoverInternal {
 		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "review certificates")
 		certStatuses, err := r.discoverInternalCerts(ctx, certMonitor.Spec.SendMail)
@@ -85,15 +89,33 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 		} else {
 			updatedStatuses = append(updatedStatuses, certStatuses...)
 		}
-		certMonitor.Status.MonitoredCertificates = updatedStatuses
-		// log.Info(fmt.Sprintf("%v", updatedStatuses))
-		if err := r.Status().Update(ctx, certMonitor); err != nil {
-			log.Error(err, "failed to update CertificateMonitor status")
-			return ctrl.Result{}, err
+		// certMonitor.Status.MonitoredCertificates = updatedStatuses
+		// // log.Info(fmt.Sprintf("%v", updatedStatuses))
+		// if err := r.Status().Update(ctx, certMonitor); err != nil {
+		// 	log.Error(err, "failed to update CertificateMonitor status")
+		// 	return ctrl.Result{}, err
+		// }
+	}
+	// } else {
+	// 	log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "nothing would be done")
+	// }
+	// Review external certs
+	if certMonitor.Spec.DiscoverExternal {
+		certDirsList := filepath.SplitList(*config.CertDirs)
+		klog.InfoS("Check certificates", "discoverExternal", certMonitor.Spec.DiscoverExternal)
+		certStatuses, err := r.discoverExternalCerts(certDirsList, clientset, nodeName)
+		if err != nil {
+			log.Error(err, "failed to discover internal certs")
+		} else {
+			updatedStatuses = append(updatedStatuses, certStatuses...)
 		}
+	}
 
-	} else {
-		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "nothing would be done")
+	certMonitor.Status.MonitoredCertificates = updatedStatuses
+	// log.Info(fmt.Sprintf("%v", updatedStatuses))
+	if err := r.Status().Update(ctx, certMonitor); err != nil {
+		log.Error(err, "failed to update CertificateMonitor status")
+		return ctrl.Result{}, err
 	}
 
 	// for _, cert := range certMonitor.Spec.Certificates {

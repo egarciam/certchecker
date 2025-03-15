@@ -3,12 +3,13 @@ kind: CertificateMonitor
 metadata:
   labels:
     app.kubernetes.io/name: certificatemonitor
-    app.kubernetes.io/instance: certificatemonitor-sample
+    app.kubernetes.io/instance: external-certificatemonitor 
     app.kubernetes.io/part-of: check-certs
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/created-by: check-certs
-  name: certificatemonitor-sample
+  name: external-certificatemonitor
 spec:
   # TODO(user): Add fields here
-  discoverInternal: true
-  sendMail: true
+  discoverInternal: false
+  sendMail: false
+  discoverExternal: true
