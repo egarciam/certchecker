@@ -14,6 +14,7 @@ import (
 	"egarciam.com/checkcert/internal/config"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
@@ -110,19 +111,36 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 }
 
 // func checkCerts Logicto check external certificates
-func (r *CertificateMonitorReconciler) discoverExternalCerts(certDirs []string, clientset *kubernetes.Clientset, nodeName string) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
+func (r *CertificateMonitorReconciler) discoverExternalCerts(certDirs []string, ctx context.Context, nodeName string) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
 	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
-	for _, dir := range certDirs {
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if *config.Debug {
-				klog.InfoS("Checking ", "file", path)
-			}
-			return r.checkCertificate(path, info, err, clientset, nodeName, certStatuses)
-		})
-		if err != nil {
-			klog.Infof("Error scanning certificates in %s: %v", dir, err)
-		}
+
+	//Por cada nodo del cluster levantamos un pod para hace la comprobacion
+
+	// Fetch the list of nodes in the cluster
+	nodeList := &corev1.NodeList{}
+	if err := r.List(ctx, nodeList); err != nil {
+		klog.Error(err, "Failed to list nodes")
+		return nil, err
 	}
+
+	for _, node := range nodeList.Items {
+
+		if isControlPlaneNode(node) {
+			pod := r.createExternalNodeCheckerPod(node.Name)
+			if err := r.Create(ctx, pod); err != nil {
+				if !errors.IsAlreadyExists(err) {
+					klog.Error(err, "Failed to create certificate checker Pod", "node", node.Name)
+				}
+				continue
+			}
+			// err := r.monitorPod(context.Background(), pod)
+			// if err != nil {
+			// 	klog.Error(err)
+			// }
+		}
+
+	}
+
 	return certStatuses, nil
 }
 
@@ -194,4 +212,13 @@ func (r *CertificateMonitorReconciler) annotateNode(clientset *kubernetes.Client
 	}
 
 	return err
+}
+
+// isControlPlaneNode checks if a node is a control plane node
+func isControlPlaneNode(node corev1.Node) bool {
+	// Control plane nodes are typically labeled with `node-role.kubernetes.io/control-plane` or `node-role.kubernetes.io/master`
+	labels := node.Labels
+	_, isControlPlane := labels["node-role.kubernetes.io/control-plane"]
+	_, isMaster := labels["node-role.kubernetes.io/master"]
+	return isControlPlane || isMaster
 }

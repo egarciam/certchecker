@@ -103,9 +103,9 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if certMonitor.Spec.DiscoverExternal {
 		certDirsList := filepath.SplitList(*config.CertDirs)
 		klog.InfoS("Check certificates", "discoverExternal", certMonitor.Spec.DiscoverExternal)
-		certStatuses, err := r.discoverExternalCerts(certDirsList, clientset, nodeName)
+		certStatuses, err := r.discoverExternalCerts(certDirsList, context.TODO(), nodeName)
 		if err != nil {
-			log.Error(err, "failed to discover internal certs")
+			log.Error(err, "failed to discover external certs")
 		} else {
 			updatedStatuses = append(updatedStatuses, certStatuses...)
 		}
