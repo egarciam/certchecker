@@ -124,6 +124,7 @@ func (r *CertificateMonitorReconciler) discoverExternalCerts(certDirs []string, 
 	}
 
 	for _, node := range nodeList.Items {
+		klog.InfoS("Iterating nodes", "node", node.Name)
 
 		if isControlPlaneNode(node) {
 			pod := r.createExternalNodeCheckerPod(node.Name)
@@ -137,12 +138,33 @@ func (r *CertificateMonitorReconciler) discoverExternalCerts(certDirs []string, 
 			// if err != nil {
 			// 	klog.Error(err)
 			// }
+
+			// existingPod := &corev1.Pod{}
+			// if err := r.Get(ctx, client.ObjectKey{Name: pod.Name,
+			// 	Namespace: "default"}, existingPod); err == nil {
+			// 	podLogOpts := &corev1.PodLogOptions{
+			// 		Container: "cert-checker", // Name of the container
+			// 	}
+			// 	req := r.Client.CoreV1().Pods("default").GetLogs(pod.Name, podLogOpts)
+			// 	logs, err := req.DoRaw(ctx)
+			// 	if err != nil {
+			// 		fmt.Errorf("failed to fetch logs: %v", err)
+			// 		return certStatuses, err
+			// 	}
+			// 	fmt.Printf("Logs:\n%s\n", logs)
+			// }
+
 		}
 
 	}
 
 	return certStatuses, nil
 }
+
+// // func checkCerts Logicto check external certificates
+// func (r *CertificateMonitorReconciler) discoverExternalCertsBis(ctx context.Context, nodeName string) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
+
+// }
 
 // func checkCertificare Logic to check particular certificate
 // TODO posiblemenete duplicada con GetCertificateStatus en discover-helper.go
