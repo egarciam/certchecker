@@ -22,6 +22,8 @@ import (
 	"math"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -83,8 +85,12 @@ const (
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.0/pkg/reconcile
 func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(context.Background())
+	log := log.FromContext(ctx)
 	log.Info("EN RECONCILIATION LOOP")
+	start := time.Now()
+	defer func() {
+		reconcileDuration.Observe(time.Since(start).Seconds())
+	}()
 
 	certMonitor := &monitoringv1alpha1.CertificateMonitor{}
 	if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
@@ -93,21 +99,30 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	//Si no esta especificada la busqueda salimos y esperamos a que se actualice el spec
+	// Si no esta especificada la busqueda salimos y esperamos a que se actualice el spec
 	if !certMonitor.Spec.DiscoverInternal {
 		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados NO activada.Modifique el objeto para iniciar la reconciliacion")
 		return ctrl.Result{}, nil
 	}
 
 	log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados activada")
-	updatedStatuses := []monitoringv1alpha1.MonitoredCertificateStatus{}
-	internalCertsStatus, err := r.discoverInternalCerts(ctx, certMonitor)
+	now := r.now()
+	updatedStatuses, summary, mailReady, err := r.discoverInternalCerts(ctx, certMonitor)
 	if err != nil {
+		reconcileErrors.Inc()
 		log.Error(err, "failed to discover internal certs")
+		meta.SetStatusCondition(&certMonitor.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "DiscoveryFailed",
+			Message:            err.Error(),
+			ObservedGeneration: certMonitor.Generation,
+		})
+		if updateErr := r.Status().Update(ctx, certMonitor); updateErr != nil {
+			log.Error(updateErr, "failed to update CertificateMonitor conditions")
+		}
 		return ctrl.Result{}, err
 	}
-	updatedStatuses = append(updatedStatuses, internalCertsStatus...)
-	certMonitor.Status.MonitoredCertificates = updatedStatuses
 
 	// Update the status with retry logic
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -116,11 +131,57 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return err
 		}
 
-		// Update the status field
 		certMonitor.Status.MonitoredCertificates = updatedStatuses
+		certMonitor.Status.Summary = summary
+		certMonitor.Status.LastChecked = now.Format(time.RFC3339)
+		certMonitor.Status.ObservedGeneration = certMonitor.Generation
+
+		meta.SetStatusCondition(&certMonitor.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			Reason:             "Reconciled",
+			Message:            "Certificate discovery completed",
+			ObservedGeneration: certMonitor.Generation,
+		})
+		if summary.Errors > 0 {
+			meta.SetStatusCondition(&certMonitor.Status.Conditions, metav1.Condition{
+				Type:               "Degraded",
+				Status:             metav1.ConditionTrue,
+				Reason:             "CertificateErrors",
+				Message:            fmt.Sprintf("%d certificate(s) could not be parsed", summary.Errors),
+				ObservedGeneration: certMonitor.Generation,
+			})
+		} else {
+			meta.SetStatusCondition(&certMonitor.Status.Conditions, metav1.Condition{
+				Type:               "Degraded",
+				Status:             metav1.ConditionFalse,
+				Reason:             "NoErrors",
+				Message:            "All discovered certificates were parsed",
+				ObservedGeneration: certMonitor.Generation,
+			})
+		}
+		if certMonitor.Spec.SendMail {
+			mailCondition := metav1.Condition{
+				Type:               "MailConfigured",
+				Status:             metav1.ConditionTrue,
+				Reason:             "RecipientsLoaded",
+				Message:            "Email recipients are configured",
+				ObservedGeneration: certMonitor.Generation,
+			}
+			if !mailReady {
+				mailCondition.Status = metav1.ConditionFalse
+				mailCondition.Reason = "RecipientsUnavailable"
+				mailCondition.Message = "Email recipients could not be loaded"
+			}
+			meta.SetStatusCondition(&certMonitor.Status.Conditions, mailCondition)
+		} else {
+			meta.RemoveStatusCondition(&certMonitor.Status.Conditions, "MailConfigured")
+		}
+
 		return r.Status().Update(ctx, certMonitor)
 	})
 	if err != nil {
+		reconcileErrors.Inc()
 		log.Error(err, "failed to update CertificateMonitor status")
 		return ctrl.Result{}, err
 	}
@@ -135,8 +196,9 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 }
 
 // discoverInternalCerts searches for kubernetes.io/tls secrets across namespaces
-// and returns the status of the certificates that need attention.
-func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context, certmonitor *monitoringv1alpha1.CertificateMonitor) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
+// and returns the status of the certificates that need attention, aggregate
+// counts, and whether email is ready to send.
+func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context, certmonitor *monitoringv1alpha1.CertificateMonitor) ([]monitoringv1alpha1.MonitoredCertificateStatus, monitoringv1alpha1.CertificateMonitorSummary, bool, error) {
 	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
 	var recipients []string
 	totals := struct {
@@ -144,21 +206,19 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 		expired  int
 		expiring int
 		valid    int
-	}{0, 0, 0, 0}
+		errors   int
+	}{}
+	summary := monitoringv1alpha1.CertificateMonitorSummary{}
 	log := log.FromContext(ctx)
 	now := r.now()
+	certificateExpiry.Reset()
 	log.Info("discoverInternalCerts")
 
 	// List all secrets of type kubernetes.io/tls
 	secretList := &corev1.SecretList{}
 	if err := r.List(ctx, secretList, client.MatchingFields{"type": "kubernetes.io/tls"}); err != nil {
 		log.Error(err, err.Error())
-		return nil, err
-	}
-	// si no hay secrets coincidentes salimos
-	if len(secretList.Items) == 0 {
-		log.Info("discoverInternalCerts", "certificados:", len(secretList.Items), "No certs to review", "Exit")
-		return certStatuses, nil
+		return nil, summary, false, err
 	}
 
 	// Enviamos correo?
@@ -178,16 +238,24 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 	}
 	mailReady := certmonitor.Spec.SendMail && len(recipients) > 0
 
+	// si no hay secrets coincidentes salimos
+	if len(secretList.Items) == 0 {
+		log.Info("discoverInternalCerts", "certificados:", len(secretList.Items), "No certs to review", "Exit")
+		return certStatuses, summary, mailReady, nil
+	}
+
 	// Secret loop
 	for _, secret := range secretList.Items {
 		expiry, err := r.getInternalCertExpiry(ctx, secret.Namespace, secret.Name)
 		if err != nil {
 			log.Error(err, err.Error())
+			totals.errors++
 			continue // Handle error or log it
 		}
 		totals.total++
+		certificateExpiry.WithLabelValues(secret.Namespace, secret.Name).Set(float64(expiry.Unix()))
 
-		status := getCertificateStatus(expiry, now)
+		status := getCertificateStatus(expiry, now, certmonitor.Spec.ExpiryThresholdDays)
 		var certStatus string
 		switch status {
 		case valid:
@@ -209,7 +277,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 		// status are always recalculated so the status never goes stale.
 		name := fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name)
 		previous := findMonitoredCert(certmonitor.Status.MonitoredCertificates, name)
-		shouldSendMail := mailReady && emailShouldBeSent(previous, certmonitor.Spec.EmailCoolDown, now)
+		shouldSendMail := mailReady && emailShouldBeSent(previous, certmonitor.Spec.EmailCooldown, now)
 
 		certStatusEntry := monitoringv1alpha1.MonitoredCertificateStatus{
 			Name:      name,
@@ -236,8 +304,18 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 
 		certStatuses = append(certStatuses, certStatusEntry)
 	}
-	log.Info("Cert Summary", "total", totals.total, "validos", totals.valid, "expirados", totals.expired, "expiring", totals.expiring)
-	return certStatuses, nil
+	summary = monitoringv1alpha1.CertificateMonitorSummary{
+		Total:    totals.total,
+		Valid:    totals.valid,
+		Expiring: totals.expiring,
+		Expired:  totals.expired,
+		Errors:   totals.errors,
+	}
+	certificatesByStatus.WithLabelValues(valid).Set(float64(summary.Valid))
+	certificatesByStatus.WithLabelValues(expiring).Set(float64(summary.Expiring))
+	certificatesByStatus.WithLabelValues(expired).Set(float64(summary.Expired))
+	log.Info("Cert Summary", "total", summary.Total, "validos", summary.Valid, "expirados", summary.Expired, "expiring", summary.Expiring, "errors", summary.Errors)
+	return certStatuses, summary, mailReady, nil
 }
 
 // recordEvent emits a Kubernetes event when an event recorder is configured.
@@ -400,9 +478,11 @@ func (r *CertificateMonitorReconciler) sendMails(expiry time.Time, status string
 		totals.total++
 		// Send the email
 		if err := r.sendMail(subject, body, recipient); err != nil {
+			emailsFailed.WithLabelValues(status).Inc()
 			log.Error(err, "failed to send email", "recipient", recipient)
 			return err
 		}
+		emailsSent.WithLabelValues(status).Inc()
 		log.Info("Email sent successfully", "recipient", recipient, "certificate", secret.Name, "namespace", secret.Namespace)
 	}
 	log.Info("Sent email figures", "certificate", secret.Name, "namespace",

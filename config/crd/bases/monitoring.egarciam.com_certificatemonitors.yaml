@@ -17,7 +17,23 @@ spec:
     singular: certificatemonitor
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.summary.total
+      name: Total
+      type: integer
+    - jsonPath: .status.summary.expiring
+      name: Expiring
+      type: integer
+    - jsonPath: .status.summary.expired
+      name: Expired
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: CertificateMonitor is the Schema for the certificatemonitors
@@ -44,12 +60,23 @@ spec:
             properties:
               checkInterval:
                 default: 86400
+                description: CheckInterval is the number of seconds between certificate
+                  checks.
                 minimum: 0
                 type: integer
               discoverInternal:
                 default: false
-                description: Certificates     []CertificateSpec `json:"certificates"`
+                description: |-
+                  DiscoverInternal enables discovery of kubernetes.io/tls Secrets across
+                  the cluster.
                 type: boolean
+              emailCooldown:
+                default: 86400
+                description: |-
+                  EmailCooldown is the number of seconds to wait before re-notifying about
+                  the same certificate.
+                minimum: 0
+                type: integer
               emailRecipientsConfigMap:
                 default: email-recipients-config
                 description: |-
@@ -61,21 +88,101 @@ spec:
                   EmailRecipientsNamespace is the namespace of the recipients ConfigMap.
                   It defaults to the namespace of the CertificateMonitor object.
                 type: string
-              emailcooldown:
-                default: 86400
+              expiryThresholdDays:
+                default: 30
+                description: |-
+                  ExpiryThresholdDays is the number of days before expiry at which a
+                  certificate is reported as expiring.
                 minimum: 0
                 type: integer
               sendMail:
                 default: false
+                description: |-
+                  SendMail enables email notifications for expiring and expired
+                  certificates.
                 type: boolean
             type: object
           status:
             description: CertificateMonitorStatus defines the observed state of CertificateMonitor
             properties:
+              conditions:
+                description: Conditions describe the current state of the monitor.
+                items:
+                  description: "Condition contains details for one aspect of the current
+                    state of this API Resource.\n---\nThis struct is intended for
+                    direct use as an array at the field path .status.conditions.  For
+                    example,\n\n\n\ttype FooStatus struct{\n\t    // Represents the
+                    observations of a foo's current state.\n\t    // Known .status.conditions.type
+                    are: \"Available\", \"Progressing\", and \"Degraded\"\n\t    //
+                    +patchMergeKey=type\n\t    // +patchStrategy=merge\n\t    // +listType=map\n\t
+                    \   // +listMapKey=type\n\t    Conditions []metav1.Condition `json:\"conditions,omitempty\"
+                    patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"`\n\n\n\t
+                    \   // other fields\n\t}"
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: |-
+                        type of condition in CamelCase or in foo.example.com/CamelCase.
+                        ---
+                        Many .condition.type values are consistent across resources like Available, but because arbitrary conditions can be
+                        useful (see .node.status.conditions), the ability to deconflict is important.
+                        The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastChecked:
+                description: LastChecked is the time of the last successful certificate
+                  discovery.
+                type: string
               monitoredCertificates:
                 description: |-
-                  INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-                  Important: Run "make" to regenerate code after modifying this file
+                  MonitoredCertificates contains the certificates that are expiring or
+                  expired. Valid certificates are counted in the summary.
                 items:
                   description: MonitoredCertificateStatus represents the status of
                     a monitored certificate.
@@ -100,8 +207,30 @@ spec:
                   - status
                   type: object
                 type: array
-            required:
-            - monitoredCertificates
+              observedGeneration:
+                description: ObservedGeneration is the last generation reconciled
+                  by the controller.
+                format: int64
+                type: integer
+              summary:
+                description: Summary contains aggregate counts from the last discovery.
+                properties:
+                  errors:
+                    type: integer
+                  expired:
+                    type: integer
+                  expiring:
+                    type: integer
+                  total:
+                    type: integer
+                  valid:
+                    type: integer
+                required:
+                - expired
+                - expiring
+                - total
+                - valid
+                type: object
             type: object
         type: object
     served: true

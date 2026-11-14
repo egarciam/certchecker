@@ -12,6 +12,8 @@ spec:
   discoverInternal: true
   sendMail: true
   checkInterval: 15
+  emailCooldown: 86400
+  expiryThresholdDays: 30
   # Recipients ConfigMap. The namespace defaults to the namespace of this
   # CertificateMonitor, and the name defaults to email-recipients-config.
   emailRecipientsConfigMap: email-recipients-config
