@@ -81,11 +81,13 @@ func (r *CertificateMonitorReconciler) getInternalCertExpiry(ctx context.Context
 }
 
 // getCertificateStatus determines if a certificate is valid, expiring, or expired.
-func getCertificateStatus(expiry, now time.Time) string {
+// thresholdDays is the number of days before expiry at which a certificate is
+// considered expiring.
+func getCertificateStatus(expiry, now time.Time, thresholdDays int) string {
 	if now.After(expiry) {
 		return expired
 	}
-	if now.Add(30 * 24 * time.Hour).After(expiry) {
+	if now.Add(time.Duration(thresholdDays) * 24 * time.Hour).After(expiry) {
 		return expiring
 	}
 	return valid

@@ -38,17 +38,28 @@ type CertificateMonitorSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Certificates     []CertificateSpec `json:"certificates"`
+	// DiscoverInternal enables discovery of kubernetes.io/tls Secrets across
+	// the cluster.
 	// +kubebuilder:default=false
 	DiscoverInternal bool `json:"discoverInternal,omitempty"`
+	// SendMail enables email notifications for expiring and expired
+	// certificates.
 	// +kubebuilder:default=false
 	SendMail bool `json:"sendMail,omitempty"`
+	// CheckInterval is the number of seconds between certificate checks.
 	// +kubebuilder:default=86400
 	// +kubebuilder:validation:Minimum=0
 	CheckInterval int `json:"checkInterval,omitempty"`
+	// EmailCooldown is the number of seconds to wait before re-notifying about
+	// the same certificate.
 	// +kubebuilder:default=86400
 	// +kubebuilder:validation:Minimum=0
-	EmailCoolDown int `json:"emailcooldown,omitempty"`
+	EmailCooldown int `json:"emailCooldown,omitempty"`
+	// ExpiryThresholdDays is the number of days before expiry at which a
+	// certificate is reported as expiring.
+	// +kubebuilder:default=30
+	// +kubebuilder:validation:Minimum=0
+	ExpiryThresholdDays int `json:"expiryThresholdDays,omitempty"`
 	// EmailRecipientsConfigMap is the name of the ConfigMap containing the
 	// JSON list of email recipients under the "emails" key.
 	// +kubebuilder:default=email-recipients-config
@@ -68,15 +79,38 @@ type MonitoredCertificateStatus struct {
 	LastEmailSentAt string `json:"lastEmailSentAt"` //Fecha de envio de ultimo correo
 }
 
+// CertificateMonitorSummary contains aggregate certificate counts for the
+// last reconciliation.
+type CertificateMonitorSummary struct {
+	Total    int `json:"total"`
+	Valid    int `json:"valid"`
+	Expiring int `json:"expiring"`
+	Expired  int `json:"expired"`
+	Errors   int `json:"errors,omitempty"`
+}
+
 // CertificateMonitorStatus defines the observed state of CertificateMonitor
 type CertificateMonitorStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	MonitoredCertificates []MonitoredCertificateStatus `json:"monitoredCertificates"`
+	// ObservedGeneration is the last generation reconciled by the controller.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// LastChecked is the time of the last successful certificate discovery.
+	LastChecked string `json:"lastChecked,omitempty"`
+	// Summary contains aggregate counts from the last discovery.
+	Summary CertificateMonitorSummary `json:"summary,omitempty"`
+	// Conditions describe the current state of the monitor.
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// MonitoredCertificates contains the certificates that are expiring or
+	// expired. Valid certificates are counted in the summary.
+	MonitoredCertificates []MonitoredCertificateStatus `json:"monitoredCertificates,omitempty"`
 }
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+//+kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.summary.total`
+//+kubebuilder:printcolumn:name="Expiring",type=integer,JSONPath=`.status.summary.expiring`
+//+kubebuilder:printcolumn:name="Expired",type=integer,JSONPath=`.status.summary.expired`
+//+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CertificateMonitor is the Schema for the certificatemonitors API
 // +kubebuilder:resource:shortName=cmt;cmts
