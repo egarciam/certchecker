@@ -23,21 +23,9 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// CertificateSpec defines the desired certificates to monitor.
-// type CertificateSpec struct {
-// 	Name       string `json:"name"`
-// 	Type       string `json:"type"` // "internal" or "external"
-// 	SecretName string `json:"secretName,omitempty"`
-// 	Namespace  string `json:"namespace,omitempty"`
-// 	URL        string `json:"url,omitempty"`
-// }
-
 // CertificateMonitorSpec defines the desired state of CertificateMonitor
 
 type CertificateMonitorSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
 	// DiscoverInternal enables discovery of kubernetes.io/tls Secrets across
 	// the cluster.
 	// +kubebuilder:default=false
