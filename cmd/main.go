@@ -67,7 +67,8 @@ func main() {
 		"If set the metrics endpoint is served securely")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.StringVar(&leaderElectionNamespace, "leader-election-namespace", "default", "Leader election namespace.")
+	flag.StringVar(&leaderElectionNamespace, "leader-election-namespace", "",
+		"Namespace for the leader election lease. Defaults to the pod namespace.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -96,7 +97,7 @@ func main() {
 		TLSOpts: tlsOpts,
 	})
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	managerOptions := ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
@@ -107,7 +108,6 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "f5bd1e26.egarciam.com",
-		// LeaderElectionNamespace: leaderElectionNamespace,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -119,7 +119,12 @@ func main() {
 		// if you are doing or is intended to do any operation such as perform cleanups
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
-	})
+	}
+	if leaderElectionNamespace != "" {
+		managerOptions.LeaderElectionNamespace = leaderElectionNamespace
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), managerOptions)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)

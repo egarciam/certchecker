@@ -40,7 +40,6 @@ import (
 	"time"
 
 	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
-	// email "egarciam.com/checkcert/lib/email"
 )
 
 // CertificateMonitorReconciler reconciles a CertificateMonitor object
@@ -69,7 +68,7 @@ const (
 	defaultcheckinterval int    = 86400 //Valor por defecto.
 )
 
-//+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors;configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/status,verbs=get;update;patch
@@ -199,7 +198,6 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 // and returns the status of the certificates that need attention, aggregate
 // counts, and whether email is ready to send.
 func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context, certmonitor *monitoringv1alpha1.CertificateMonitor) ([]monitoringv1alpha1.MonitoredCertificateStatus, monitoringv1alpha1.CertificateMonitorSummary, bool, error) {
-	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
 	var recipients []string
 	totals := struct {
 		total    int
@@ -220,6 +218,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 		log.Error(err, err.Error())
 		return nil, summary, false, err
 	}
+	certStatuses := make([]monitoringv1alpha1.MonitoredCertificateStatus, 0, len(secretList.Items))
 
 	// Enviamos correo?
 	if certmonitor.Spec.SendMail {
@@ -292,7 +291,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 
 		// Send mail only when configured and cooldown has elapsed.
 		if shouldSendMail {
-			if err := r.sendMails(expiry, status, &secret, &recipients); err != nil {
+			if err := r.sendMails(ctx, expiry, status, &secret, &recipients); err != nil {
 				log.Error(err, "failed to send email for certificate", "name", name)
 				r.recordEvent(certmonitor, corev1.EventTypeWarning, "EmailSendFailed",
 					fmt.Sprintf("failed to send email for %s: %v", name, err))
@@ -444,8 +443,8 @@ func (r *CertificateMonitorReconciler) allMonitorRequests(ctx context.Context) [
 }
 
 // sendMails sends one email per recipient for a certificate that needs attention.
-func (r *CertificateMonitorReconciler) sendMails(expiry time.Time, status string, secret *corev1.Secret, recipients *[]string) error {
-	log := log.FromContext(context.Background())
+func (r *CertificateMonitorReconciler) sendMails(ctx context.Context, expiry time.Time, status string, secret *corev1.Secret, recipients *[]string) error {
+	log := log.FromContext(ctx)
 	if recipients == nil || len(*recipients) == 0 {
 		return fmt.Errorf("no email recipients configured")
 	}
