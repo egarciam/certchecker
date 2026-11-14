@@ -126,7 +126,42 @@ func (r *CertificateMonitorReconciler) getRecipients(ctx context.Context, certmo
 	return recipients, nil
 }
 
-// sendMail delegates to the email package. Tests inject MailSender instead.
-func sendMail(subject, body, recipient string) error {
-	return email.SendMail(subject, body, recipient)
+// resolveSMTPConfig builds the SMTP configuration for a monitor. It starts
+// from the manager-wide defaults, applies the spec overrides, and optionally
+// loads credentials from the referenced Secret.
+func (r *CertificateMonitorReconciler) resolveSMTPConfig(ctx context.Context, certmonitor *monitoringv1alpha1.CertificateMonitor) (email.Config, error) {
+	cfg := r.DefaultSMTP
+	if (cfg == email.Config{}) {
+		cfg = email.DefaultConfig()
+	}
+	cfg = cfg.WithDefaults()
+
+	if certmonitor.Spec.SMTPHost != "" {
+		cfg.Host = certmonitor.Spec.SMTPHost
+	}
+	if certmonitor.Spec.SMTPPort != 0 {
+		cfg.Port = certmonitor.Spec.SMTPPort
+	}
+	if certmonitor.Spec.SMTPFrom != "" {
+		cfg.From = certmonitor.Spec.SMTPFrom
+	}
+	cfg.TLS = certmonitor.Spec.SMTPTLS
+
+	if secretName := certmonitor.Spec.SMTPCredentialsSecret; secretName != "" {
+		namespace := certmonitor.Spec.SMTPCredentialsNamespace
+		if namespace == "" {
+			namespace = certmonitor.Namespace
+		}
+		var secret corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, &secret); err != nil {
+			return cfg, fmt.Errorf("unable to read SMTP credentials secret %s/%s: %w", namespace, secretName, err)
+		}
+		cfg.Username = string(secret.Data["username"])
+		cfg.Password = string(secret.Data["password"])
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
 }

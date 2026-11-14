@@ -61,6 +61,15 @@ spec:
   expiryThresholdDays: 30     # days before expiry to report "expiring"
   emailRecipientsConfigMap: email-recipients-config
   emailRecipientsNamespace: default
+  # SMTP relay overrides. Each field falls back to the manager defaults
+  # (--smtp-host, --smtp-port, --smtp-from).
+  smtpHost: mailhog-service
+  smtpPort: 1025
+  smtpFrom: no-reply@example.com
+  # Optional credentials Secret with "username" and "password" keys.
+  # smtpCredentialsSecret: smtp-auth
+  # smtpCredentialsNamespace: default
+  # smtpTls: false
 ```
 
 | Field | Default | Description |
@@ -73,6 +82,12 @@ spec:
 | `expiryThresholdDays` | `30` | Days before expiry at which a certificate is reported as expiring. |
 | `emailRecipientsConfigMap` | `email-recipients-config` | ConfigMap containing the `emails` key. |
 | `emailRecipientsNamespace` | CR namespace | Namespace of the recipients ConfigMap. |
+| `smtpHost` | manager `--smtp-host` (`mailhog-service`) | SMTP server hostname. |
+| `smtpPort` | manager `--smtp-port` (`1025`) | SMTP server port. |
+| `smtpFrom` | manager `--smtp-from` (`no-reply@example.com`) | Sender address. |
+| `smtpTls` | `false` | Use implicit TLS (SMTPS, usually port 465). |
+| `smtpCredentialsSecret` | none | Secret with `username` and `password` keys for SMTP auth. |
+| `smtpCredentialsNamespace` | CR namespace | Namespace of the credentials Secret. |
 
 ### Recipients ConfigMap
 
@@ -92,18 +107,43 @@ sets the `MailConfigured` condition to `False`.
 
 ### SMTP
 
-Email delivery currently targets a MailHog-compatible SMTP server at
-`mailhog-service.default.svc.cluster.local:1025`, without authentication, from
-`no-reply@example.com`. A development deployment is available in
-`test/mailhog/deployment.yaml`:
+SMTP settings resolve in this order:
+
+1. built-in defaults (`mailhog-service`, port `1025`, `no-reply@example.com`),
+2. manager flags `--smtp-host`, `--smtp-port`, `--smtp-from`,
+3. `CertificateMonitor` spec fields `smtpHost`, `smtpPort`, `smtpFrom`,
+   `smtpTls`, and the optional `smtpCredentialsSecret` / `smtpCredentialsNamespace`.
+
+A development MailHog deployment is available in `test/mailhog/deployment.yaml`:
 
 ```sh
 kubectl apply -f test/mailhog/deployment.yaml
 ```
 
-Parameterizing the SMTP host, port, sender, and credentials is a planned
-follow-up. Until then, adapt `sendMail` in `internal/controller/helper.go` or run a
-compatible SMTP relay.
+To authenticate against a real relay, create a Secret and reference it:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: smtp-auth
+  namespace: default
+type: Opaque
+stringData:
+  username: certchecker
+  password: change-me
+---
+# in the CertificateMonitor spec
+smtpHost: smtp.example.com
+smtpPort: 587
+smtpFrom: certs@example.com
+smtpCredentialsSecret: smtp-auth
+```
+
+`spec.smtpTls` enables implicit TLS (SMTPS, typically port 465); for STARTTLS on
+port 587 leave it `false`. If the configuration or the credentials Secret cannot
+be resolved, discovery still runs, the monitor emits a `SMTPConfigUnavailable`
+warning event, and mail is skipped until the problem is fixed.
 
 ## Status
 

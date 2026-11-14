@@ -60,6 +60,26 @@ type CertificateMonitorSpec struct {
 	// EmailRecipientsNamespace is the namespace of the recipients ConfigMap.
 	// It defaults to the namespace of the CertificateMonitor object.
 	EmailRecipientsNamespace string `json:"emailRecipientsNamespace,omitempty"`
+	// SMTPHost is the SMTP server hostname. When empty, the controller
+	// default (manager flag --smtp-host) is used.
+	SMTPHost string `json:"smtpHost,omitempty"`
+	// SMTPPort is the SMTP server port. When zero, the controller default
+	// (manager flag --smtp-port) is used.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	SMTPPort int `json:"smtpPort,omitempty"`
+	// SMTPFrom is the sender address. When empty, the controller default
+	// (manager flag --smtp-from) is used.
+	SMTPFrom string `json:"smtpFrom,omitempty"`
+	// SMTPTLS enables implicit TLS (SMTPS, usually port 465).
+	SMTPTLS bool `json:"smtpTls,omitempty"`
+	// SMTPCredentialsSecret is the name of an optional Secret holding the
+	// "username" and "password" keys used to authenticate against the SMTP
+	// server. When unset, mail is sent without authentication.
+	SMTPCredentialsSecret string `json:"smtpCredentialsSecret,omitempty"`
+	// SMTPCredentialsNamespace is the namespace of the credentials Secret. It
+	// defaults to the namespace of the CertificateMonitor object.
+	SMTPCredentialsNamespace string `json:"smtpCredentialsNamespace,omitempty"`
 }
 
 // MonitoredCertificateStatus represents the status of a monitored certificate.

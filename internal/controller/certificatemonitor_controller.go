@@ -40,6 +40,7 @@ import (
 	"time"
 
 	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
+	"egarciam.com/checkcert/internal/email"
 )
 
 // CertificateMonitorReconciler reconciles a CertificateMonitor object
@@ -50,7 +51,10 @@ type CertificateMonitorReconciler struct {
 	// Now returns the current time. It is overridable for tests.
 	Now func() time.Time
 	// MailSender sends an email. It is overridable for tests.
-	MailSender func(subject, body, recipient string) error
+	MailSender func(cfg email.Config, subject, body, recipient string) error
+	// DefaultSMTP holds the manager-wide SMTP defaults. CertificateMonitor
+	// spec fields override them.
+	DefaultSMTP email.Config
 }
 
 // now returns the reconciler clock, falling back to time.Now.
@@ -241,6 +245,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 	certStatuses := make([]monitoringv1alpha1.MonitoredCertificateStatus, 0, len(secretList.Items))
 
 	// Enviamos correo?
+	var smtpConfig email.Config
 	if certmonitor.Spec.SendMail {
 		log.Info("SendMail", fmt.Sprintf("%v", certmonitor.Spec.SendMail), "Envio de correo activo - habra que enviar correo con estado de los certificados")
 		var err error
@@ -253,6 +258,18 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 			recipients = nil
 		} else {
 			log.Info("Recipients fetched successfully", "recipients", recipients)
+		}
+
+		// SMTP settings come from the manager defaults plus spec overrides.
+		// A broken configuration must not abort discovery either.
+		smtpConfig, err = r.resolveSMTPConfig(ctx, certmonitor)
+		if err != nil {
+			log.Error(err, "invalid SMTP configuration; continuing without sending email")
+			r.recordEvent(certmonitor, corev1.EventTypeWarning, "SMTPConfigUnavailable", "unable to configure SMTP: "+err.Error())
+			recipients = nil
+		} else {
+			log.Info("SMTP configuration resolved", "host", smtpConfig.Host, "port", smtpConfig.Port,
+				"from", smtpConfig.From, "auth", smtpConfig.Username != "", "tls", smtpConfig.TLS)
 		}
 	}
 	mailReady := certmonitor.Spec.SendMail && len(recipients) > 0
@@ -311,7 +328,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 
 		// Send mail only when configured and cooldown has elapsed.
 		if shouldSendMail {
-			if err := r.sendMails(ctx, expiry, status, &secret, &recipients); err != nil {
+			if err := r.sendMails(ctx, smtpConfig, expiry, status, &secret, &recipients); err != nil {
 				log.Error(err, "failed to send email for certificate", "name", name)
 				r.recordEvent(certmonitor, corev1.EventTypeWarning, "EmailSendFailed",
 					fmt.Sprintf("failed to send email for %s: %v", name, err))
@@ -463,7 +480,7 @@ func (r *CertificateMonitorReconciler) allMonitorRequests(ctx context.Context) [
 }
 
 // sendMails sends one email per recipient for a certificate that needs attention.
-func (r *CertificateMonitorReconciler) sendMails(ctx context.Context, expiry time.Time, status string, secret *corev1.Secret, recipients *[]string) error {
+func (r *CertificateMonitorReconciler) sendMails(ctx context.Context, smtpConfig email.Config, expiry time.Time, status string, secret *corev1.Secret, recipients *[]string) error {
 	log := log.FromContext(ctx)
 	if recipients == nil || len(*recipients) == 0 {
 		return fmt.Errorf("no email recipients configured")
@@ -496,7 +513,7 @@ func (r *CertificateMonitorReconciler) sendMails(ctx context.Context, expiry tim
 		}
 		totals.total++
 		// Send the email
-		if err := r.sendMail(subject, body, recipient); err != nil {
+		if err := r.sendMail(smtpConfig, subject, body, recipient); err != nil {
 			emailsFailed.WithLabelValues(status).Inc()
 			log.Error(err, "failed to send email", "recipient", recipient)
 			return err
@@ -509,10 +526,10 @@ func (r *CertificateMonitorReconciler) sendMails(ctx context.Context, expiry tim
 	return nil
 }
 
-// sendMail uses the injected sender when present, otherwise the package default.
-func (r *CertificateMonitorReconciler) sendMail(subject, body, recipient string) error {
+// sendMail uses the injected sender when present, otherwise the SMTP config.
+func (r *CertificateMonitorReconciler) sendMail(smtpConfig email.Config, subject, body, recipient string) error {
 	if r.MailSender != nil {
-		return r.MailSender(subject, body, recipient)
+		return r.MailSender(smtpConfig, subject, body, recipient)
 	}
-	return sendMail(subject, body, recipient)
+	return smtpConfig.Send(subject, body, recipient)
 }

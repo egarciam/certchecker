@@ -37,6 +37,7 @@ import (
 	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
 	"egarciam.com/checkcert/internal/config"
 	"egarciam.com/checkcert/internal/controller"
+	"egarciam.com/checkcert/internal/email"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -77,6 +78,12 @@ func main() {
 	config.DefaultCheckIntervalMinutes = flag.Int("check-interval-minutes", 10080,
 		"Checking interval in minutes. Default 7 days (10,080 min)")
 	config.Debug = flag.Bool("debug", true, "Enable debug logging")
+	smtpHost := flag.String("smtp-host", email.DefaultHost,
+		"Default SMTP server host for CertificateMonitor notifications")
+	smtpPort := flag.Int("smtp-port", email.DefaultPort,
+		"Default SMTP server port for CertificateMonitor notifications")
+	smtpFrom := flag.String("smtp-from", email.DefaultFrom,
+		"Default sender address for CertificateMonitor notifications")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -141,6 +148,11 @@ func main() {
 	if err = (&controller.CertificateMonitorReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		DefaultSMTP: email.Config{
+			Host: *smtpHost,
+			Port: *smtpPort,
+			From: *smtpFrom,
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CertificateMonitor")
 		os.Exit(1)
