@@ -24,7 +24,6 @@ import (
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -47,8 +46,6 @@ var (
 )
 
 func init() {
-	klog.InitFlags(nil) //Revisar si aplica
-	klog.Info("Starting Node Certificate Checker")
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(monitoringv1alpha1.AddToScheme(scheme))
@@ -58,22 +55,27 @@ func init() {
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
+	var leaderElectionNamespace string
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", false,
 		"If set the metrics endpoint is served securely")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-
-	config.CertDirs = flag.String("cert-dirs", "/etc/kubernetes/pki:/etc/ssl/certs", "OS list separator separated list of directories to scan for certificates")
-	config.DefaultWarningDays = flag.Int("warning-expiration-days", 30, "Number of days to consider a certificate as expiring soon")
-	config.DefaultCheckIntervalMinutes = flag.Int("check-interval-minutes", 10080, "Checking interval in minutes. Defaul 7 days (10.080 min)")
+	flag.StringVar(&leaderElectionNamespace, "leader-election-namespace", "",
+		"Namespace for the leader election lease. Defaults to the pod namespace.")
+	config.CertDirs = flag.String("cert-dirs", "/etc/kubernetes/pki:/etc/ssl/certs",
+		"OS list separator separated list of directories to scan for certificates")
+	config.DefaultWarningDays = flag.Int("warning-expiration-days", 30,
+		"Number of days to consider a certificate as expiring soon")
+	config.DefaultCheckIntervalMinutes = flag.Int("check-interval-minutes", 10080,
+		"Checking interval in minutes. Default 7 days (10,080 min)")
 	config.Debug = flag.Bool("debug", true, "Enable debug logging")
 	opts := zap.Options{
 		Development: true,
@@ -103,7 +105,7 @@ func main() {
 		TLSOpts: tlsOpts,
 	})
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	managerOptions := ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
@@ -125,7 +127,12 @@ func main() {
 		// if you are doing or is intended to do any operation such as perform cleanups
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
-	})
+	}
+	if leaderElectionNamespace != "" {
+		managerOptions.LeaderElectionNamespace = leaderElectionNamespace
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), managerOptions)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)

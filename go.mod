@@ -10,7 +10,10 @@ require (
 	sigs.k8s.io/controller-runtime v0.17.0
 )
 
-require gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
+require (
+	github.com/evanphx/json-patch v4.12.0+incompatible // indirect
+	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -67,7 +70,7 @@ require (
 	k8s.io/api v0.29.0
 	k8s.io/apiextensions-apiserver v0.29.0 // indirect
 	k8s.io/component-base v0.29.0 // indirect
-	k8s.io/klog/v2 v2.110.1
+	k8s.io/klog/v2 v2.110.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20231010175941-2dd684a91f00 // indirect
 	k8s.io/utils v0.0.0-20241210054802-24370beab758 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect

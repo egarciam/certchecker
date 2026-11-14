@@ -10,9 +10,12 @@
 bin/*
 Dockerfile.cross
 test-data/
+tilt_bin/
 
 # Test binary, built with `go test -c`
 *.test
+cmd/__debug_bin*
+etcdkeys.txt
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out

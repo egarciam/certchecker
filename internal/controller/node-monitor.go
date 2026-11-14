@@ -1,17 +1,14 @@
 package controller
 
 import (
-	"context"
 	"fmt"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// createCertificateCheckerPod creates a Pod to check certificates on a specific node
+// createExternalNodeCheckerPod creates a Pod to check certificates on a
+// specific control-plane node.
 func (r *CertificateMonitorReconciler) createExternalNodeCheckerPod(nodeName string) *corev1.Pod {
 	hostPathType := corev1.HostPathDirectory
 	return &corev1.Pod{
@@ -26,7 +23,6 @@ func (r *CertificateMonitorReconciler) createExternalNodeCheckerPod(nodeName str
 				{
 					Name:  "cert-checker",
 					Image: "localhost:5000/node-cert-checker",
-					// Command: []string{"/bin/sh", "-c", "/check_certs.sh"},
 					Env: []corev1.EnvVar{
 						{
 							Name:  "NODE_NAME",
@@ -37,9 +33,9 @@ func (r *CertificateMonitorReconciler) createExternalNodeCheckerPod(nodeName str
 							ValueFrom: &corev1.EnvVarSource{
 								ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "cert-paths-config", // Name of the ConfigMap
+										Name: "cert-paths-config",
 									},
-									Key: "CERT_DIRS", // Key in the ConfigMap
+									Key: "CERT_DIRS",
 								},
 							},
 						},
@@ -48,9 +44,9 @@ func (r *CertificateMonitorReconciler) createExternalNodeCheckerPod(nodeName str
 							ValueFrom: &corev1.EnvVarSource{
 								ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "cert-paths-config", // Name of the ConfigMap
+										Name: "cert-paths-config",
 									},
-									Key: "DEBUG", // Key in the ConfigMap
+									Key: "DEBUG",
 								},
 							},
 						},
@@ -59,9 +55,9 @@ func (r *CertificateMonitorReconciler) createExternalNodeCheckerPod(nodeName str
 							ValueFrom: &corev1.EnvVarSource{
 								ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "cert-paths-config", // Name of the ConfigMap
+										Name: "cert-paths-config",
 									},
-									Key: "DEFAULT_WARNING_DAYS", // Key in the ConfigMap
+									Key: "DEFAULT_WARNING_DAYS",
 								},
 							},
 						},
@@ -70,9 +66,9 @@ func (r *CertificateMonitorReconciler) createExternalNodeCheckerPod(nodeName str
 							ValueFrom: &corev1.EnvVarSource{
 								ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 									LocalObjectReference: corev1.LocalObjectReference{
-										Name: "cert-paths-config", // Name of the ConfigMap
+										Name: "cert-paths-config",
 									},
-									Key: "DEFAULT_CHECK_INTERVAL_MINUTES", // Key in the ConfigMap
+									Key: "DEFAULT_CHECK_INTERVAL_MINUTES",
 								},
 							},
 						},
@@ -92,36 +88,12 @@ func (r *CertificateMonitorReconciler) createExternalNodeCheckerPod(nodeName str
 					VolumeSource: corev1.VolumeSource{
 						HostPath: &corev1.HostPathVolumeSource{
 							Path: "/etc/kubernetes/pki",
-							Type: &hostPathType, //pointer.HostPathType(corev1.HostPathDirectory),
+							Type: &hostPathType,
 						},
 					},
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyNever,
 		},
-	}
-}
-
-// monitorPod monitors the status of the certificate checker Pod
-func (r *CertificateMonitorReconciler) monitorPod(ctx context.Context, pod *corev1.Pod) error {
-	log := log.FromContext(ctx)
-
-	// Wait for the Pod to complete
-	for {
-		time.Sleep(5 * time.Second)
-		if err := r.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
-			return err
-		}
-
-		switch pod.Status.Phase {
-		case corev1.PodSucceeded:
-			log.Info("Certificate checker Pod succeeded", "pod", pod.Name)
-			return nil
-		case corev1.PodFailed:
-			log.Info("Certificate checker Pod failed", "pod", pod.Name)
-			return fmt.Errorf("Pod %s failed", pod.Name)
-		default:
-			log.Info("Certificate checker Pod is still running", "pod", pod.Name)
-		}
 	}
 }

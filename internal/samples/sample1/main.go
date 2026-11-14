@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -24,13 +23,15 @@ func main() {
 		fmt.Printf("Error mounting host root: %v\n", err)
 		return
 	}
-	defer syscall.Unmount(mountPoint, 0) // Cleanup
+	defer func() {
+		_ = syscall.Unmount(mountPoint, 0) // Cleanup
+	}()
 
 	// Construct the full path to the host's /etc/kubernetes
 	fullHostPath := filepath.Join(mountPoint, hostPath)
 
 	// Read the directory contents
-	files, err := ioutil.ReadDir(fullHostPath)
+	files, err := os.ReadDir(fullHostPath)
 	if err != nil {
 		fmt.Printf("Error reading directory: %v\n", err)
 		return
@@ -44,7 +45,7 @@ func main() {
 
 	// Example: Read a specific file
 	adminConfPath := filepath.Join(fullHostPath, "admin.conf")
-	if content, err := ioutil.ReadFile(adminConfPath); err == nil {
+	if content, err := os.ReadFile(adminConfPath); err == nil {
 		fmt.Printf("\nContents of admin.conf:\n%s\n", string(content))
 	} else {
 		fmt.Printf("Error reading admin.conf: %v\n", err)

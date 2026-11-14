@@ -1,184 +1,210 @@
-# check-certs
-// TODO(user): Add simple overview of use/purpose
+# certchecker
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+A Kubernetes operator that monitors the expiry of `kubernetes.io/tls` Secrets and sends
+email alerts for certificates that are expiring or already expired.
 
-## Getting Started
+## How it works
 
-```mermaid
-graph TD
-    subgraph Kubernetes Cluster
-        subgraph Node
-            A[Application Pod] --> B[Istio Sidecar]
-            B --> C[Istio Egress Gateway]
-            C --> D[Node Network Interface]
-        end
-        D -->|SNAT to VIP| E[MetalLB VIP: 172.19.40.50]
-    end
-    E --> F[External Destination]
+`certchecker` reconciles `CertificateMonitor` custom resources from the
+`monitoring.egarciam.com/v1alpha1` API group. On each reconciliation it:
 
-    style A fill:#f9f,stroke:#333,stroke-width:2px
-    style B fill:#bbf,stroke:#333,stroke-width:2px
-    style C fill:#bbf,stroke:#333,stroke-width:2px
-    style D fill:#bbf,stroke:#333,stroke-width:2px
-    style E fill:#bbf,stroke:#333,stroke-width:2px
-    style F fill:#f9f,stroke:#333,stroke-width:2px
+1. Lists every `kubernetes.io/tls` Secret in the cluster.
+2. Parses the first certificate in `tls.crt` and reads its `NotAfter` date.
+3. Classifies the certificate as `valid`, `expiring` (within
+   `spec.expiryThresholdDays`), or `expired`.
+4. Records expiring and expired certificates in `.status.monitoredCertificates`
+   and aggregate counts in `.status.summary`.
+5. Optionally sends one email per recipient for each certificate that needs
+   attention, respecting `spec.emailCooldown`.
+
+The controller also watches TLS Secrets and the recipients ConfigMap, so rotating
+a certificate or updating recipients triggers a reconcile immediately. The
+`spec.checkInterval` timer remains as a safety net.
+
+## Monitoring scope and duplicate alerts
+
+The `CertificateMonitor` resource is namespaced, but **certificate discovery is
+cluster-wide**. Run a single `CertificateMonitor` per cluster. Multiple instances
+inspect the same Secrets and can send duplicate notifications.
+
+Keep the CR and its recipients ConfigMap in the same namespace, or set
+`spec.emailRecipientsNamespace` explicitly. Namespace-scoped discovery is a
+possible future mode; the current behavior is intentional.
+
+### External certificate checks (experimental)
+
+Setting `spec.discoverExternal: true` starts a certificate checker Pod on each
+control-plane node. This mode requires:
+
+- the `node-cert-checker` ServiceAccount,
+- the `node-cert-checker` image,
+- a `cert-paths-config` ConfigMap with `CERT_DIRS`, `DEBUG`,
+  `DEFAULT_WARNING_DAYS`, and `DEFAULT_CHECK_INTERVAL_MINUTES`.
+
+External results are reported through node annotations; the controller currently
+records only that the checker Pods were created. Treat this mode as experimental.
+
+## Configuration
+
+```yaml
+apiVersion: monitoring.egarciam.com/v1alpha1
+kind: CertificateMonitor
+metadata:
+  name: certificatemonitor-sample
+  namespace: default
+spec:
+  discoverInternal: true      # enable cluster-wide TLS Secret discovery
+  discoverExternal: false     # experimental node certificate checker pods
+  sendMail: true              # send email alerts
+  checkInterval: 3600         # seconds between periodic checks (default 86400)
+  emailCooldown: 86400        # seconds before re-alerting for one certificate
+  expiryThresholdDays: 30     # days before expiry to report "expiring"
+  emailRecipientsConfigMap: email-recipients-config
+  emailRecipientsNamespace: default
 ```
 
-```mermaid
-flowchart TD
- subgraph Rack["Rack"]
-        BM1("💻<br>BM Node 1<br>IP: 10.1.1.101")
-        BM2("💻<br>BM Node 2<br>IP: 10.1.1.102")
-        ToR("↕️<br>ToR Switch<br>GW IP: 10.1.1.1")
-  end
- subgraph PostGW["Network Segments (Post-GW)"]
-        ControlNet("☁️<br>Control Network")
-        ProvNet("☁️<br>Provisioning Network")
-  end
- subgraph SIG_VPN["VRF: SIG_VPN"]
-        ToR_SIG_VPN("[ToR]<br>GW: 10.1.1.1<br>P2P: 192.168.0.1")
-        DCGW_SIG_VPN("[DC-GW]<br>P2P: 192.168.0.2")
-  end
- subgraph Control_VPN["VRF: Control VPN"]
-        DCGW_Control_VPN("[DC-GW]<br>GW: 172.16.1.1")
-  end
- subgraph Prov_VPN["VRF: Prov VPN"]
-        DCGW_Prov_VPN("[DC-GW]<br>GW: 172.17.1.1")
-  end
- subgraph subGraph5["Data Center"]
-        Rack
-        DCGW@{ label: "<font size=\"5\">🏛️</font><br><b>Data Center Gateway (DC-GW)</b>" }
-        PostGW
-        SIG_VPN
-        Control_VPN
-        Prov_VPN
-  end
-    BM1 -- VLAN 10 --> ToR
-    BM2 -- VLAN 10 --> ToR
-    ToR -- "SIG_VPN Link<br>192.168.0.0/30" --> DCGW
-    DCGW -- Route Leaking<br><b>(VRF Stitching)</b> --> DCGW_Control_VPN & DCGW_Prov_VPN
-    ToR_SIG_VPN <--> DCGW_SIG_VPN
-    DCGW -- VLAN 100<br>Control VPN Traffic --> ControlNet
-    DCGW -- VLAN 200<br>Prov VPN Traffic --> ProvNet
-    Control["Control"]
+| Field | Default | Description |
+| --- | --- | --- |
+| `discoverInternal` | `false` | Enables TLS Secret discovery. |
+| `discoverExternal` | `false` | Enables experimental node certificate checker Pods. |
+| `sendMail` | `false` | Enables email notifications. |
+| `checkInterval` | `86400` | Seconds between scheduled checks. |
+| `emailCooldown` | `86400` | Seconds to wait before re-notifying about the same certificate. `0` disables the cooldown. |
+| `expiryThresholdDays` | `30` | Days before expiry at which a certificate is reported as expiring. |
+| `emailRecipientsConfigMap` | `email-recipients-config` | ConfigMap containing the `emails` key. |
+| `emailRecipientsNamespace` | CR namespace | Namespace of the recipients ConfigMap. |
 
-    DCGW@{ shape: rounded}
-    style PostGW fill:#f2f2f2,stroke:#333,stroke-width:2px
-    style SIG_VPN fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px,color:#000
-    style Prov_VPN fill:#f8cecc,stroke:#b85450,stroke-width:2px,color:#000
-    style Control VPN fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#000
-    linkStyle 2 stroke-width:2px,stroke:blue,stroke-dasharray:5,5,fill:none
+### Recipients ConfigMap
 
-
-
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: email-recipients-config
+  namespace: default
+data:
+  emails: '["oncall@example.com", "platform@example.com"]'
 ```
 
-### Prerequisites
-- go version v1.21.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+The `emails` value must be a JSON array of strings. If the ConfigMap is missing or
+invalid, certificate discovery still runs; the monitor reports a warning event and
+sets the `MailConfigured` condition to `False`.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+### SMTP
+
+Email delivery currently targets a MailHog-compatible SMTP server at
+`mailhog-service.default.svc.cluster.local:1025`, without authentication, from
+`no-reply@example.com`. A development deployment is available in
+`test/mailhog/deployment.yaml`:
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/check-certs:tag
+kubectl apply -f test/mailhog/deployment.yaml
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified. 
-And it is required to have access to pull the image from the working environment. 
-Make sure you have the proper permission to the registry if the above commands don’t work.
+Parameterizing the SMTP host, port, sender, and credentials is a planned
+follow-up. Until then, adapt `sendMail` in `internal/controller/helper.go` or run a
+compatible SMTP relay.
 
-**Install the CRDs into the cluster:**
+## Status
+
+`kubectl get cmt` shows a compact view:
+
+```
+NAME                        READY   TOTAL   EXPIRING   EXPIRED   AGE
+certificatemonitor-sample   True    12      2          0         5m
+```
+
+The status also contains:
+
+- `.status.summary` – `total`, `valid`, `expiring`, `expired`, and `errors`.
+- `.status.monitoredCertificates` – name, status, expiry, namespace, and email
+  bookkeeping for expiring/expired certificates.
+- `.status.lastChecked` – timestamp of the last successful discovery.
+- `.status.observedGeneration` – generation last reconciled.
+- `.status.conditions` – `Ready`, `Degraded`, and `MailConfigured`.
+
+`EmailSent` and `LastEmailSentAt` are only updated after a successful delivery, so
+failed sends are retried on the next reconcile.
+
+## Metrics
+
+The manager exposes Prometheus metrics on its metrics endpoint:
+
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `certchecker_certificate_expiry_timestamp_seconds` | gauge | `namespace`, `secret` | Certificate expiry as a Unix timestamp. |
+| `certchecker_certificates` | gauge | `status` | Number of certificates by status. |
+| `certchecker_emails_sent_total` | counter | `status` | Emails sent. |
+| `certchecker_emails_failed_total` | counter | `status` | Email failures. |
+| `certchecker_reconcile_errors_total` | counter | | Failed reconciliations. |
+| `certchecker_reconcile_duration_seconds` | histogram | | Reconciliation duration. |
+
+A `ServiceMonitor` is provided in `config/prometheus`. It is commented out in
+`config/default/kustomization.yaml` because it requires the Prometheus Operator
+CRDs. Enable the `../prometheus` resource there after installing the operator.
+
+## Install
+
+Build and push the manager image, then deploy:
 
 ```sh
-make install
+make docker-build docker-push IMG=<registry>/check-certs:<tag>
+make deploy IMG=<registry>/check-certs:<tag>
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+Alternatively, install the consolidated bundle:
 
 ```sh
-make deploy IMG=<some-registry>/check-certs:tag
+kubectl apply -f dist/install.yaml
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin 
-privileges or be logged in as admin.
+The bundle installs the CRD, RBAC, and the manager into the
+`check-certs-system` namespace. It references the `controller:latest` image;
+set the image with `make build-installer IMG=<registry>/check-certs:<tag>`
+before publishing.
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+Create a monitor:
 
 ```sh
 kubectl apply -k config/samples/
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+Uninstall:
 
 ```sh
 kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
+make undeploy
 make uninstall
 ```
 
-**UnDeploy the controller from the cluster:**
+## Development
+
+Prerequisites: Go 1.21+, Docker, kubectl, and a Kubernetes cluster for deployment.
 
 ```sh
-make undeploy
+make manifests       # regenerate CRDs and RBAC
+make generate        # regenerate deepcopy code
+make fmt vet         # format and vet
+make test            # envtest + unit tests
+make lint            # golangci-lint
+make run             # run the controller locally
 ```
 
-## Project Distribution
+If a newer Go toolchain is on `PATH` but `GOROOT` points at another version, run
+the Make targets with the matching `go` binary (for example
+`PATH=/usr/local/go/bin:$PATH make test`).
 
-Following are the steps to build the installer and distribute this project to users.
+`Tiltfile` provides a live-reload development loop with Tilt.
 
-1. Build the installer for the image built and published in the registry:
+## CI
 
-```sh
-make build-installer IMG=<some-registry>/check-certs:tag
-```
-
-NOTE: The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without
-its dependencies.
-
-2. Using the installer
-
-Users can just run kubectl apply -f <URL for YAML BUNDLE> to install the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/check-certs/<tag or branch>/dist/install.yaml
-```
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+`.github/workflows/test.yml` runs `make test` and `make lint` on pushes to `main`
+and on pull requests. Protect `main` in the repository settings so both jobs are
+required before merge.
 
 ## License
 
 Copyright 2024.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
-# certchecker
+Licensed under the Apache License, Version 2.0
+(<http://www.apache.org/licenses/LICENSE-2.0>).

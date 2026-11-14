@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - secrets
   verbs:
   - get
   - list
@@ -15,8 +16,25 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - secrets
+  - events
   verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
   - get
   - list
   - watch
