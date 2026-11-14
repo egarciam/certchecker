@@ -11,7 +11,7 @@ metadata:
 spec:
   discoverInternal: true
   sendMail: true
-  checkInterval: 15
+  checkInterval: 3600
   emailCooldown: 86400
   expiryThresholdDays: 30
   # Recipients ConfigMap. The namespace defaults to the namespace of this

@@ -130,7 +130,7 @@ func TestFindMonitoredCert(t *testing.T) {
 
 func TestDiscoverInternalCertsDoesNotMarkFailedSendAsSent(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
-	secret := newTLSTestSecret(t, "default", "tls-expiring", now.Add(10*24*time.Hour))
+	secret := newTLSTestSecret(t, "tls-expiring", now.Add(10*24*time.Hour))
 	configMap := newRecipientsConfigMap()
 	reconciler := newTestReconciler(t, now, []client.Object{secret, configMap})
 	sendAttempts := 0
@@ -172,7 +172,7 @@ func TestDiscoverInternalCertsDoesNotMarkFailedSendAsSent(t *testing.T) {
 
 func TestDiscoverInternalCertsMarksSuccessfulSend(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
-	secret := newTLSTestSecret(t, "default", "tls-expiring", now.Add(10*24*time.Hour))
+	secret := newTLSTestSecret(t, "tls-expiring", now.Add(10*24*time.Hour))
 	reconciler := newTestReconciler(t, now, []client.Object{secret, newRecipientsConfigMap()})
 	reconciler.MailSender = func(string, string, string) error { return nil }
 
@@ -209,7 +209,7 @@ func TestDiscoverInternalCertsMarksSuccessfulSend(t *testing.T) {
 
 func TestDiscoverInternalCertsRefreshesStatusDuringCooldown(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
-	secret := newTLSTestSecret(t, "default", "tls-now-expired", now.Add(-time.Hour))
+	secret := newTLSTestSecret(t, "tls-now-expired", now.Add(-time.Hour))
 	reconciler := newTestReconciler(t, now, []client.Object{secret, newRecipientsConfigMap()})
 	sendAttempts := 0
 	reconciler.MailSender = func(string, string, string) error {
@@ -266,7 +266,7 @@ func TestDiscoverInternalCertsRefreshesStatusDuringCooldown(t *testing.T) {
 
 func TestDiscoverInternalCertsContinuesWhenRecipientsAreMissing(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
-	secret := newTLSTestSecret(t, "default", "tls-expired", now.Add(-time.Hour))
+	secret := newTLSTestSecret(t, "tls-expired", now.Add(-time.Hour))
 	reconciler := newTestReconciler(t, now, []client.Object{secret})
 	sendAttempts := 0
 	reconciler.MailSender = func(string, string, string) error {
@@ -404,7 +404,7 @@ func TestGetRecipientsUsesConfiguredConfigMap(t *testing.T) {
 
 func TestReconcileUpdatesStatusAndConditions(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
-	secret := newTLSTestSecret(t, "default", "tls-expiring", now.Add(10*24*time.Hour))
+	secret := newTLSTestSecret(t, "tls-expiring", now.Add(10*24*time.Hour))
 	monitor := &monitoringv1alpha1.CertificateMonitor{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-monitor",
@@ -489,7 +489,7 @@ func newTestReconciler(t *testing.T, now time.Time, objects []client.Object) *Ce
 	}
 }
 
-func newTLSTestSecret(t *testing.T, namespace, name string, notAfter time.Time) *corev1.Secret {
+func newTLSTestSecret(t *testing.T, name string, notAfter time.Time) *corev1.Secret {
 	t.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -509,7 +509,7 @@ func newTLSTestSecret(t *testing.T, namespace, name string, notAfter time.Time) 
 	}
 
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Type:       corev1.SecretTypeTLS,
 		Data: map[string][]byte{
 			"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),

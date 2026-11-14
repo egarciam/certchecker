@@ -24,7 +24,6 @@ rules:
   - monitoring.egarciam.com
   resources:
   - certificatemonitors
-  - configmaps
   verbs:
   - create
   - delete
