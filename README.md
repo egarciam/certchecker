@@ -31,6 +31,19 @@ Keep the CR and its recipients ConfigMap in the same namespace, or set
 `spec.emailRecipientsNamespace` explicitly. Namespace-scoped discovery is a
 possible future mode; the current behavior is intentional.
 
+### External certificate checks (experimental)
+
+Setting `spec.discoverExternal: true` starts a certificate checker Pod on each
+control-plane node. This mode requires:
+
+- the `node-cert-checker` ServiceAccount,
+- the `node-cert-checker` image,
+- a `cert-paths-config` ConfigMap with `CERT_DIRS`, `DEBUG`,
+  `DEFAULT_WARNING_DAYS`, and `DEFAULT_CHECK_INTERVAL_MINUTES`.
+
+External results are reported through node annotations; the controller currently
+records only that the checker Pods were created. Treat this mode as experimental.
+
 ## Configuration
 
 ```yaml
@@ -41,6 +54,7 @@ metadata:
   namespace: default
 spec:
   discoverInternal: true      # enable cluster-wide TLS Secret discovery
+  discoverExternal: false     # experimental node certificate checker pods
   sendMail: true              # send email alerts
   checkInterval: 3600         # seconds between periodic checks (default 86400)
   emailCooldown: 86400        # seconds before re-alerting for one certificate
@@ -51,7 +65,8 @@ spec:
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `discoverInternal` | `false` | Enables TLS Secret discovery. When false, reconciliation does nothing. |
+| `discoverInternal` | `false` | Enables TLS Secret discovery. |
+| `discoverExternal` | `false` | Enables experimental node certificate checker Pods. |
 | `sendMail` | `false` | Enables email notifications. |
 | `checkInterval` | `86400` | Seconds between scheduled checks. |
 | `emailCooldown` | `86400` | Seconds to wait before re-notifying about the same certificate. `0` disables the cooldown. |

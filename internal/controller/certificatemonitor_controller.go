@@ -70,6 +70,8 @@ const (
 
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
+//+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/finalizers,verbs=update
@@ -98,33 +100,51 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Si no esta especificada la busqueda salimos y esperamos a que se actualice el spec
-	if !certMonitor.Spec.DiscoverInternal {
-		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados NO activada.Modifique el objeto para iniciar la reconciliacion")
+	// If neither discovery mode is enabled, wait for the spec to change.
+	if !certMonitor.Spec.DiscoverInternal && !certMonitor.Spec.DiscoverExternal {
+		log.Info("discovery disabled", "discoverInternal", certMonitor.Spec.DiscoverInternal,
+			"discoverExternal", certMonitor.Spec.DiscoverExternal)
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados activada")
 	now := r.now()
-	updatedStatuses, summary, mailReady, err := r.discoverInternalCerts(ctx, certMonitor)
-	if err != nil {
-		reconcileErrors.Inc()
-		log.Error(err, "failed to discover internal certs")
-		meta.SetStatusCondition(&certMonitor.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionFalse,
-			Reason:             "DiscoveryFailed",
-			Message:            err.Error(),
-			ObservedGeneration: certMonitor.Generation,
-		})
-		if updateErr := r.Status().Update(ctx, certMonitor); updateErr != nil {
-			log.Error(updateErr, "failed to update CertificateMonitor conditions")
+	updatedStatuses := []monitoringv1alpha1.MonitoredCertificateStatus{}
+	summary := monitoringv1alpha1.CertificateMonitorSummary{}
+	mailReady := false
+
+	if certMonitor.Spec.DiscoverInternal {
+		log.Info("discoverInternal", fmt.Sprintf("%v", certMonitor.Spec.DiscoverInternal), "verificación de certificados activada")
+		internalStatuses, internalSummary, internalMailReady, err := r.discoverInternalCerts(ctx, certMonitor)
+		if err != nil {
+			reconcileErrors.Inc()
+			log.Error(err, "failed to discover internal certs")
+			meta.SetStatusCondition(&certMonitor.Status.Conditions, metav1.Condition{
+				Type:               "Ready",
+				Status:             metav1.ConditionFalse,
+				Reason:             "DiscoveryFailed",
+				Message:            err.Error(),
+				ObservedGeneration: certMonitor.Generation,
+			})
+			if updateErr := r.Status().Update(ctx, certMonitor); updateErr != nil {
+				log.Error(updateErr, "failed to update CertificateMonitor conditions")
+			}
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
+		updatedStatuses = append(updatedStatuses, internalStatuses...)
+		summary = internalSummary
+		mailReady = internalMailReady
+	}
+
+	if certMonitor.Spec.DiscoverExternal {
+		if err := r.discoverExternalCerts(ctx); err != nil {
+			reconcileErrors.Inc()
+			log.Error(err, "failed to discover external certs")
+			summary.Errors++
+		}
 	}
 
 	// Update the status with retry logic
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Fetch the latest version of the resource
 		if err := r.Get(ctx, req.NamespacedName, certMonitor); err != nil {
 			return err

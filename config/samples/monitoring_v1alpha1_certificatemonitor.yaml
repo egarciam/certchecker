@@ -10,6 +10,7 @@ metadata:
   name: certificatemonitor-sample
 spec:
   discoverInternal: true
+  discoverExternal: false
   sendMail: true
   checkInterval: 3600
   emailCooldown: 86400
@@ -18,4 +19,3 @@ spec:
   # CertificateMonitor, and the name defaults to email-recipients-config.
   emailRecipientsConfigMap: email-recipients-config
   emailRecipientsNamespace: default
-

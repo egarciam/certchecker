@@ -30,6 +30,11 @@ type CertificateMonitorSpec struct {
 	// the cluster.
 	// +kubebuilder:default=false
 	DiscoverInternal bool `json:"discoverInternal,omitempty"`
+	// DiscoverExternal enables the experimental discovery of certificates on
+	// control-plane nodes. It requires the node certificate checker image and
+	// related ConfigMaps.
+	// +kubebuilder:default=false
+	DiscoverExternal bool `json:"discoverExternal,omitempty"`
 	// SendMail enables email notifications for expiring and expired
 	// certificates.
 	// +kubebuilder:default=false
@@ -60,11 +65,13 @@ type CertificateMonitorSpec struct {
 // MonitoredCertificateStatus represents the status of a monitored certificate.
 type MonitoredCertificateStatus struct {
 	Name            string `json:"name"`
-	Status          string `json:"status"`           // "valid", "expiring", "expired"
-	Expiry          string `json:"expiry,omitempty"` //Fecha de validez
+	Type            string `json:"type,omitempty"` // "internal" or "external"
+	Path            string `json:"path,omitempty"` // cluster location or host path
+	Status          string `json:"status"`         // "valid", "expiring", "expired"
+	Expiry          string `json:"expiry,omitempty"`
 	Namespace       string `json:"namespace"`
-	EmailSent       bool   `json:"emailSent"`       // Add a flag
-	LastEmailSentAt string `json:"lastEmailSentAt"` //Fecha de envio de ultimo correo
+	EmailSent       bool   `json:"emailSent"`
+	LastEmailSentAt string `json:"lastEmailSentAt"`
 }
 
 // CertificateMonitorSummary contains aggregate certificate counts for the

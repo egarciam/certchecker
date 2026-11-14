@@ -64,6 +64,13 @@ spec:
                   checks.
                 minimum: 0
                 type: integer
+              discoverExternal:
+                default: false
+                description: |-
+                  DiscoverExternal enables the experimental discovery of certificates on
+                  control-plane nodes. It requires the node certificate checker image and
+                  related ConfigMaps.
+                type: boolean
               discoverInternal:
                 default: false
                 description: |-
@@ -197,7 +204,11 @@ spec:
                       type: string
                     namespace:
                       type: string
+                    path:
+                      type: string
                     status:
+                      type: string
+                    type:
                       type: string
                   required:
                   - emailSent

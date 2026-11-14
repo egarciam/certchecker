@@ -9,7 +9,7 @@ import (
 	"time"
 
 	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
-	"gopkg.in/gomail.v2"
+	"egarciam.com/checkcert/internal/email"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -126,26 +126,7 @@ func (r *CertificateMonitorReconciler) getRecipients(ctx context.Context, certmo
 	return recipients, nil
 }
 
-// func SendMail
+// sendMail delegates to the email package. Tests inject MailSender instead.
 func sendMail(subject, body, recipient string) error {
-	// Internal SMTP server details
-	// smtpHost := "mailhog-service.default.svc.cluster.local" // Internal mail server service
-	smtpHost := "mailhog-service.default.svc.cluster.local"
-	smtpPort := 1025 // SMTP port (MailHog default)
-
-	// Create the email
-	m := gomail.NewMessage()
-	m.SetHeader("From", "no-reply@example.com") // Sender address
-	m.SetHeader("To", recipient)                // Recipient address
-	m.SetHeader("Subject", subject)             // Email subject
-	m.SetBody("text/plain", body)               // Email body
-
-	// Set up the SMTP server
-	d := gomail.NewDialer(smtpHost, smtpPort, "", "") // No authentication required for MailHog
-
-	// Send the email
-	if err := d.DialAndSend(m); err != nil {
-		return fmt.Errorf("failed to send email: %w", err)
-	}
-	return nil
+	return email.SendMail(subject, body, recipient)
 }
