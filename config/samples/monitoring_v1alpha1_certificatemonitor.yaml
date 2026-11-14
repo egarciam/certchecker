@@ -19,3 +19,12 @@ spec:
   # CertificateMonitor, and the name defaults to email-recipients-config.
   emailRecipientsConfigMap: email-recipients-config
   emailRecipientsNamespace: default
+  # SMTP overrides. Unset fields fall back to the manager defaults
+  # (--smtp-host, --smtp-port, --smtp-from).
+  smtpHost: mailhog-service
+  smtpPort: 1025
+  smtpFrom: no-reply@example.com
+  # Optional credentials Secret with "username" and "password" keys.
+  # smtpCredentialsSecret: smtp-auth
+  # smtpCredentialsNamespace: default
+  # smtpTls: false

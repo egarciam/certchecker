@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
+	"egarciam.com/checkcert/internal/email"
 )
 
 func TestGetCertificateStatus(t *testing.T) {
@@ -134,7 +135,7 @@ func TestDiscoverInternalCertsDoesNotMarkFailedSendAsSent(t *testing.T) {
 	configMap := newRecipientsConfigMap()
 	reconciler := newTestReconciler(t, now, []client.Object{secret, configMap})
 	sendAttempts := 0
-	reconciler.MailSender = func(string, string, string) error {
+	reconciler.MailSender = func(email.Config, string, string, string) error {
 		sendAttempts++
 		return errors.New("smtp unavailable")
 	}
@@ -174,7 +175,7 @@ func TestDiscoverInternalCertsMarksSuccessfulSend(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	secret := newTLSTestSecret(t, "tls-expiring", now.Add(10*24*time.Hour))
 	reconciler := newTestReconciler(t, now, []client.Object{secret, newRecipientsConfigMap()})
-	reconciler.MailSender = func(string, string, string) error { return nil }
+	reconciler.MailSender = func(email.Config, string, string, string) error { return nil }
 
 	monitor := &monitoringv1alpha1.CertificateMonitor{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
@@ -212,7 +213,7 @@ func TestDiscoverInternalCertsRefreshesStatusDuringCooldown(t *testing.T) {
 	secret := newTLSTestSecret(t, "tls-now-expired", now.Add(-time.Hour))
 	reconciler := newTestReconciler(t, now, []client.Object{secret, newRecipientsConfigMap()})
 	sendAttempts := 0
-	reconciler.MailSender = func(string, string, string) error {
+	reconciler.MailSender = func(email.Config, string, string, string) error {
 		sendAttempts++
 		return nil
 	}
@@ -269,7 +270,7 @@ func TestDiscoverInternalCertsContinuesWhenRecipientsAreMissing(t *testing.T) {
 	secret := newTLSTestSecret(t, "tls-expired", now.Add(-time.Hour))
 	reconciler := newTestReconciler(t, now, []client.Object{secret})
 	sendAttempts := 0
-	reconciler.MailSender = func(string, string, string) error {
+	reconciler.MailSender = func(email.Config, string, string, string) error {
 		sendAttempts++
 		return nil
 	}
@@ -455,6 +456,133 @@ func TestReconcileUpdatesStatusAndConditions(t *testing.T) {
 	degraded := meta.FindStatusCondition(updated.Status.Conditions, "Degraded")
 	if degraded == nil || degraded.Status != metav1.ConditionFalse {
 		t.Fatalf("Degraded condition = %+v, want False", degraded)
+	}
+}
+
+func TestResolveSMTPConfigDefaults(t *testing.T) {
+	reconciler := newTestReconciler(t, time.Now(), nil)
+	monitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+	}
+
+	cfg, err := reconciler.resolveSMTPConfig(context.Background(), monitor)
+	if err != nil {
+		t.Fatalf("resolveSMTPConfig() error = %v", err)
+	}
+	if cfg.Host != email.DefaultHost || cfg.Port != email.DefaultPort || cfg.From != email.DefaultFrom {
+		t.Fatalf("config = %+v, want built-in defaults", cfg)
+	}
+	if cfg.Username != "" || cfg.Password != "" || cfg.TLS {
+		t.Fatalf("config = %+v, want no credentials and no TLS", cfg)
+	}
+}
+
+func TestResolveSMTPConfigUsesManagerDefaultsAndSpecOverrides(t *testing.T) {
+	reconciler := newTestReconciler(t, time.Now(), nil)
+	reconciler.DefaultSMTP = email.Config{Host: "relay.internal", Port: 2525, From: "alerts@internal"}
+
+	inherited := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+	}
+	cfg, err := reconciler.resolveSMTPConfig(context.Background(), inherited)
+	if err != nil {
+		t.Fatalf("resolveSMTPConfig() error = %v", err)
+	}
+	if cfg.Host != "relay.internal" || cfg.Port != 2525 || cfg.From != "alerts@internal" {
+		t.Fatalf("config = %+v, want manager defaults", cfg)
+	}
+
+	overridden := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			SMTPHost: "smtp.example.com",
+			SMTPPort: 587,
+			SMTPFrom: "certs@example.com",
+			SMTPTLS:  true,
+		},
+	}
+	cfg, err = reconciler.resolveSMTPConfig(context.Background(), overridden)
+	if err != nil {
+		t.Fatalf("resolveSMTPConfig() error = %v", err)
+	}
+	if cfg.Host != "smtp.example.com" || cfg.Port != 587 || cfg.From != "certs@example.com" || !cfg.TLS {
+		t.Fatalf("config = %+v, want spec overrides applied", cfg)
+	}
+}
+
+func TestResolveSMTPConfigLoadsCredentialsSecret(t *testing.T) {
+	credentials := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "smtp-auth", Namespace: "ops"},
+		Data: map[string][]byte{
+			"username": []byte("mailer"),
+			"password": []byte("s3cret"),
+		},
+	}
+	reconciler := newTestReconciler(t, time.Now(), []client.Object{credentials})
+	monitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			SMTPCredentialsSecret:    "smtp-auth",
+			SMTPCredentialsNamespace: "ops",
+		},
+	}
+
+	cfg, err := reconciler.resolveSMTPConfig(context.Background(), monitor)
+	if err != nil {
+		t.Fatalf("resolveSMTPConfig() error = %v", err)
+	}
+	if cfg.Username != "mailer" || cfg.Password != "s3cret" {
+		t.Fatalf("credentials = %q/%q, want mailer/s3cret", cfg.Username, cfg.Password)
+	}
+}
+
+func TestResolveSMTPConfigReportsMissingSecret(t *testing.T) {
+	reconciler := newTestReconciler(t, time.Now(), nil)
+	monitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			SMTPCredentialsSecret: "missing",
+		},
+	}
+
+	if _, err := reconciler.resolveSMTPConfig(context.Background(), monitor); err == nil {
+		t.Fatal("resolveSMTPConfig() error = nil, want error for missing credentials secret")
+	}
+}
+
+func TestDiscoverInternalCertsSkipsMailWhenSMTPConfigInvalid(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	secret := newTLSTestSecret(t, "tls-expired", now.Add(-time.Hour))
+	reconciler := newTestReconciler(t, now, []client.Object{secret, newRecipientsConfigMap()})
+	sendAttempts := 0
+	reconciler.MailSender = func(email.Config, string, string, string) error {
+		sendAttempts++
+		return nil
+	}
+
+	monitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			DiscoverInternal:    true,
+			SendMail:            true,
+			EmailCooldown:       86400,
+			ExpiryThresholdDays: 30,
+			SMTPPort:            -1, // invalid, must not silently fall back
+		},
+	}
+
+	statuses, _, mailReady, err := reconciler.discoverInternalCerts(context.Background(), monitor)
+	if err != nil {
+		t.Fatalf("discoverInternalCerts() error = %v", err)
+	}
+	if sendAttempts != 0 {
+		t.Fatalf("send attempts = %d, want 0 with invalid SMTP config", sendAttempts)
+	}
+	if mailReady {
+		t.Fatal("mailReady = true, want false with invalid SMTP config")
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %d, want 1 despite invalid SMTP config", len(statuses))
 	}
 }
 

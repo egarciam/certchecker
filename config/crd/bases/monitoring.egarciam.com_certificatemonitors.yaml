@@ -108,6 +108,37 @@ spec:
                   SendMail enables email notifications for expiring and expired
                   certificates.
                 type: boolean
+              smtpCredentialsNamespace:
+                description: |-
+                  SMTPCredentialsNamespace is the namespace of the credentials Secret. It
+                  defaults to the namespace of the CertificateMonitor object.
+                type: string
+              smtpCredentialsSecret:
+                description: |-
+                  SMTPCredentialsSecret is the name of an optional Secret holding the
+                  "username" and "password" keys used to authenticate against the SMTP
+                  server. When unset, mail is sent without authentication.
+                type: string
+              smtpFrom:
+                description: |-
+                  SMTPFrom is the sender address. When empty, the controller default
+                  (manager flag --smtp-from) is used.
+                type: string
+              smtpHost:
+                description: |-
+                  SMTPHost is the SMTP server hostname. When empty, the controller
+                  default (manager flag --smtp-host) is used.
+                type: string
+              smtpPort:
+                description: |-
+                  SMTPPort is the SMTP server port. When zero, the controller default
+                  (manager flag --smtp-port) is used.
+                maximum: 65535
+                minimum: 1
+                type: integer
+              smtpTls:
+                description: SMTPTLS enables implicit TLS (SMTPS, usually port 465).
+                type: boolean
             type: object
           status:
             description: CertificateMonitorStatus defines the observed state of CertificateMonitor
