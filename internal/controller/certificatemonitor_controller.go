@@ -23,6 +23,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -42,6 +43,19 @@ type CertificateMonitorReconciler struct {
 	client.Client
 	ConfigMapName string // Name of the ConfigMap to fetch recipients
 	Scheme        *runtime.Scheme
+	Recorder      record.EventRecorder
+	// Now returns the current time. It is overridable for tests.
+	Now func() time.Time
+	// MailSender sends an email. It is overridable for tests.
+	MailSender func(subject, body, recipient string) error
+}
+
+// now returns the reconciler clock, falling back to time.Now.
+func (r *CertificateMonitorReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 const (
@@ -53,6 +67,7 @@ const (
 
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors;configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=monitoring.egarciam.com,resources=certificatemonitors/finalizers,verbs=update
 
@@ -117,54 +132,61 @@ func (r *CertificateMonitorReconciler) Reconcile(ctx context.Context, req ctrl.R
 	return ctrl.Result{RequeueAfter: time.Duration(checkinterval) * time.Second}, nil
 }
 
-// logic to search for kubernetes.io/tls secrets across namespaces.
+// discoverInternalCerts searches for kubernetes.io/tls secrets across namespaces
+// and returns the status of the certificates that need attention.
 func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context, certmonitor *monitoringv1alpha1.CertificateMonitor) ([]monitoringv1alpha1.MonitoredCertificateStatus, error) {
 	var certStatuses []monitoringv1alpha1.MonitoredCertificateStatus
 	var recipients []string
-	var certStatus string
 	totals := struct {
 		total    int
 		expired  int
 		expiring int
 		valid    int
 	}{0, 0, 0, 0}
-	log := log.FromContext(context.Background())
+	log := log.FromContext(ctx)
+	now := r.now()
 	log.Info("discoverInternalCerts")
+
 	// List all secrets of type kubernetes.io/tls
 	secretList := &corev1.SecretList{}
 	if err := r.List(ctx, secretList, client.MatchingFields{"type": "kubernetes.io/tls"}); err != nil {
 		log.Error(err, err.Error())
 		return nil, err
 	}
-	//si no hay secrets coincidentes salimos
+	// si no hay secrets coincidentes salimos
 	if len(secretList.Items) == 0 {
 		log.Info("discoverInternalCerts", "certificados:", len(secretList.Items), "No certs to review", "Exit")
 		return certStatuses, nil
 	}
 
-	//Enviamos correo?
+	// Enviamos correo?
 	if certmonitor.Spec.SendMail {
 		log.Info("SendMail", fmt.Sprintf("%v", certmonitor.Spec.SendMail), "Envio de correo activo - habra que enviar correo con estado de los certificados")
 		var err error
 		recipients, err = r.getRecipients(ctx)
 		if err != nil {
-			log.Error(err, "Failed to get recipients")
-			return nil, err
+			// Do not abort discovery: status is still useful even when mail is
+			// misconfigured. The event makes the configuration problem visible.
+			log.Error(err, "failed to get recipients; continuing without sending email")
+			r.recordEvent(certmonitor, corev1.EventTypeWarning, "RecipientsUnavailable", "unable to load email recipients: "+err.Error())
+			recipients = nil
+		} else {
+			log.Info("Recipients fetched successfully", "recipients", recipients)
 		}
-		log.Info("Recipients fetched successfully", "recipients", recipients)
 	}
+	mailReady := certmonitor.Spec.SendMail && len(recipients) > 0
 
-	//Secret Loop
+	// Secret loop
 	for _, secret := range secretList.Items {
 		expiry, err := r.getInternalCertExpiry(ctx, secret.Namespace, secret.Name)
 		if err != nil {
 			log.Error(err, err.Error())
 			continue // Handle error or log it
 		}
-		shouldSendMail := true // a priori lo enviamos (caso de certificados nuevos o que sean antiguos y se haya excedido el coolDown)
 		totals.total++
 
-		status := getCertificateStatus(expiry)
+		status := getCertificateStatus(expiry, now)
+		var certStatus string
 		switch status {
 		case valid:
 			totals.valid++
@@ -177,79 +199,50 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 			totals.expired++
 			certStatus = "Expired certificate"
 		}
-		//mostramos log
+		// mostramos log
 		log.Info(certStatus, "name", secret.Namespace+"."+secret.Name, "expiry date", expiry.Format(time.RFC3339))
 
-		//Si llegamos aqui son certificados chungos
-		// Check if email was already sent
-		// emailAlreadySent := false
+		// Si llegamos aqui son certificados chungos.
+		// The previous status is only used for email bookkeeping. Expiry and
+		// status are always recalculated so the status never goes stale.
+		name := fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name)
+		previous := findMonitoredCert(certmonitor.Status.MonitoredCertificates, name)
+		shouldSendMail := mailReady && emailShouldBeSent(previous, certmonitor.Spec.EmailCoolDown, now)
 
-		var tmpStatus monitoringv1alpha1.MonitoredCertificateStatus
-		for _, monitoredCert := range certmonitor.Status.MonitoredCertificates {
-			if monitoredCert.Name == fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name) && monitoredCert.EmailSent {
-				tmpStatus = monitoredCert
-				if shouldSendMail = emailShouldBeSent(monitoredCert, time.Duration(certmonitor.Spec.EmailCoolDown)); !shouldSendMail {
-					break
-				}
-			}
+		certStatusEntry := monitoringv1alpha1.MonitoredCertificateStatus{
+			Name:      name,
+			Status:    status,
+			Expiry:    expiry.Format(time.RFC3339),
+			Namespace: secret.Namespace,
 		}
-		var certstatus monitoringv1alpha1.MonitoredCertificateStatus
-		//Actualizamos el status
+		if certmonitor.Spec.SendMail {
+			certStatusEntry.EmailSent = previous.EmailSent
+			certStatusEntry.LastEmailSentAt = previous.LastEmailSentAt
+		}
+
+		// Send mail only when configured and cooldown has elapsed.
 		if shouldSendMail {
-			//Hay que actaulizar las fechas
-			certstat := monitoringv1alpha1.MonitoredCertificateStatus{
-				Name:            fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
-				Status:          status,
-				Expiry:          expiry.Format(time.RFC3339),
-				Namespace:       secret.Namespace,
-				EmailSent:       certmonitor.Spec.SendMail && shouldSendMail,
-				LastEmailSentAt: getLastEmailSentAtValue(certmonitor.Spec.SendMail, certmonitor.Spec.SendMail && shouldSendMail), /*time.Now().Format(time.RFC3339) || nil*/
-			}
-			certstatus = certstat
-		} else {
-			certstatus = tmpStatus
-		}
-
-		//Send mail?
-		if certmonitor.Spec.SendMail && shouldSendMail {
-			err := r.sendMails(expiry, status, &secret, &recipients)
-			if err != nil {
-				log.Error(err, "Error al enviar el correo para el CERTIFICADO")
+			if err := r.sendMails(expiry, status, &secret, &recipients); err != nil {
+				log.Error(err, "failed to send email for certificate", "name", name)
+				r.recordEvent(certmonitor, corev1.EventTypeWarning, "EmailSendFailed",
+					fmt.Sprintf("failed to send email for %s: %v", name, err))
+			} else {
+				certStatusEntry.EmailSent = true
+				certStatusEntry.LastEmailSentAt = now.Format(time.RFC3339)
 			}
 		}
 
-		//Update status
-		certStatuses = append(certStatuses, certstatus)
-
-		// //Send mail?
-		// if certmonitor.Spec.SendMail && shouldSendMail /*&& !emailAlreadySent*/ {
-		// 	if err := r.sendMails(expiry, status, &secret, &recipients); err == nil {
-		// 		//status with mail sent merked
-		// 		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
-		// 			Name:            fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
-		// 			Status:          status,
-		// 			Expiry:          expiry.Format(time.RFC3339),
-		// 			Namespace:       secret.Namespace,
-		// 			EmailSent:       true,
-		// 			LastEmailSentAt: time.Now().Format(time.RFC3339),
-		// 		})
-
-		// 	} else {
-		// 		//Status without mail sent mark
-		// 		// recuperamos la info del estado del certmonitor
-		// 		certStatuses = append(certStatuses, monitoringv1alpha1.MonitoredCertificateStatus{
-		// 			Name:            fmt.Sprintf("internal-%s.%s", secret.Namespace, secret.Name),
-		// 			Status:          status,
-		// 			Expiry:          expiry.Format(time.RFC3339),
-		// 			Namespace:       secret.Namespace,
-		// 			EmailSent:       tmpStatus.EmailSent,
-		// 			LastEmailSentAt: tmpStatus.LastEmailSentAt,
-		// 		})
-		// 	}
+		certStatuses = append(certStatuses, certStatusEntry)
 	}
-	//}
 	log.Info("Cert Summary", "total", totals.total, "validos", totals.valid, "expirados", totals.expired, "expiring", totals.expiring)
 	return certStatuses, nil
+}
+
+// recordEvent emits a Kubernetes event when an event recorder is configured.
+func (r *CertificateMonitorReconciler) recordEvent(obj runtime.Object, eventType, reason, message string) {
+	if r.Recorder != nil {
+		r.Recorder.Event(obj, eventType, reason, message)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -265,6 +258,7 @@ func (r *CertificateMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		return err
 	}
 	r.ConfigMapName = "email-recipients-config" // ConfigMap name with email recipients
+	r.Recorder = mgr.GetEventRecorderFor("certificatemonitor-controller")
 
 	// Predicate to ignore status updates
 	statusUpdatePredicate := predicate.Funcs{
@@ -282,9 +276,13 @@ func (r *CertificateMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		Complete(r)
 }
 
-// funcion para enviar los correos a la lista de recipients
+// sendMails sends one email per recipient for a certificate that needs attention.
 func (r *CertificateMonitorReconciler) sendMails(expiry time.Time, status string, secret *corev1.Secret, recipients *[]string) error {
 	log := log.FromContext(context.Background())
+	if recipients == nil || len(*recipients) == 0 {
+		return fmt.Errorf("no email recipients configured")
+	}
+
 	var subject, body string
 	totals := struct {
 		expiring int
@@ -292,7 +290,7 @@ func (r *CertificateMonitorReconciler) sendMails(expiry time.Time, status string
 		total    int
 	}{0, 0, 0}
 
-	//Prepare subect and body of mails
+	// Prepare subject and body of mails
 	switch status {
 	case expiring:
 		subject = fmt.Sprintf("Certificate Expiring in %v days: %s.%s", math.Round(time.Until(expiry).Hours()/24), secret.Namespace, secret.Name)
@@ -302,7 +300,7 @@ func (r *CertificateMonitorReconciler) sendMails(expiry time.Time, status string
 		body = fmt.Sprintf("The certificate %s.%s has expired on %s.", secret.Namespace, secret.Name, expiry.Format(time.RFC3339))
 	}
 
-	//Send mails
+	// Send mails
 	for _, recipient := range *recipients {
 		switch status {
 		case expiring:
@@ -312,7 +310,7 @@ func (r *CertificateMonitorReconciler) sendMails(expiry time.Time, status string
 		}
 		totals.total++
 		// Send the email
-		if err := sendMail(subject, body, recipient); err != nil {
+		if err := r.sendMail(subject, body, recipient); err != nil {
 			log.Error(err, "failed to send email", "recipient", recipient)
 			return err
 		}
@@ -321,4 +319,12 @@ func (r *CertificateMonitorReconciler) sendMails(expiry time.Time, status string
 	log.Info("Sent email figures", "certificate", secret.Name, "namespace",
 		secret.Namespace, "expiring", totals.expiring, "expired", totals.expired, "total", totals.total)
 	return nil
+}
+
+// sendMail uses the injected sender when present, otherwise the package default.
+func (r *CertificateMonitorReconciler) sendMail(subject, body, recipient string) error {
+	if r.MailSender != nil {
+		return r.MailSender(subject, body, recipient)
+	}
+	return sendMail(subject, body, recipient)
 }
