@@ -1,0 +1,372 @@
+package controller
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"math/big"
+	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
+)
+
+func TestGetCertificateStatus(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name   string
+		expiry time.Time
+		want   string
+	}{
+		{name: "expired", expiry: now.Add(-time.Hour), want: expired},
+		{name: "expiring", expiry: now.Add(29 * 24 * time.Hour), want: expiring},
+		{name: "exactly at the threshold is still valid", expiry: now.Add(30 * 24 * time.Hour), want: valid},
+		{name: "valid", expiry: now.Add(31 * 24 * time.Hour), want: valid},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := getCertificateStatus(tt.expiry, now); got != tt.want {
+				t.Fatalf("getCertificateStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEmailShouldBeSent(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	lastSent := now.Add(-time.Hour).Format(time.RFC3339)
+
+	tests := []struct {
+		name     string
+		status   monitoringv1alpha1.MonitoredCertificateStatus
+		cooldown int
+		want     bool
+	}{
+		{
+			name:   "never sent",
+			status: monitoringv1alpha1.MonitoredCertificateStatus{},
+			want:   true,
+		},
+		{
+			name:   "sent but timestamp missing",
+			status: monitoringv1alpha1.MonitoredCertificateStatus{EmailSent: true},
+			want:   true,
+		},
+		{
+			name:   "sent but timestamp invalid",
+			status: monitoringv1alpha1.MonitoredCertificateStatus{EmailSent: true, LastEmailSentAt: "not-a-date"},
+			want:   true,
+		},
+		{
+			name:     "cooldown still active",
+			status:   monitoringv1alpha1.MonitoredCertificateStatus{EmailSent: true, LastEmailSentAt: lastSent},
+			cooldown: 86400,
+			want:     false,
+		},
+		{
+			name:     "cooldown elapsed",
+			status:   monitoringv1alpha1.MonitoredCertificateStatus{EmailSent: true, LastEmailSentAt: now.Add(-25 * time.Hour).Format(time.RFC3339)},
+			cooldown: 86400,
+			want:     true,
+		},
+		{
+			name:     "zero cooldown always sends",
+			status:   monitoringv1alpha1.MonitoredCertificateStatus{EmailSent: true, LastEmailSentAt: lastSent},
+			cooldown: 0,
+			want:     true,
+		},
+		{
+			name:     "exactly at the cooldown boundary sends",
+			status:   monitoringv1alpha1.MonitoredCertificateStatus{EmailSent: true, LastEmailSentAt: now.Add(-time.Hour).Format(time.RFC3339)},
+			cooldown: 3600,
+			want:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := emailShouldBeSent(tt.status, tt.cooldown, now); got != tt.want {
+				t.Fatalf("emailShouldBeSent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindMonitoredCert(t *testing.T) {
+	statuses := []monitoringv1alpha1.MonitoredCertificateStatus{
+		{Name: "internal-default.first", Status: expiring},
+		{Name: "internal-default.second", Status: expired},
+	}
+
+	got := findMonitoredCert(statuses, "internal-default.second")
+	if got.Status != expired {
+		t.Fatalf("findMonitoredCert() status = %q, want %q", got.Status, expired)
+	}
+
+	missing := findMonitoredCert(statuses, "internal-default.missing")
+	if missing.Name != "" {
+		t.Fatalf("findMonitoredCert() for missing entry = %+v, want zero value", missing)
+	}
+}
+
+func TestDiscoverInternalCertsDoesNotMarkFailedSendAsSent(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	secret := newTLSTestSecret(t, "default", "tls-expiring", now.Add(10*24*time.Hour))
+	configMap := newRecipientsConfigMap()
+	reconciler := newTestReconciler(t, now, []client.Object{secret, configMap})
+	sendAttempts := 0
+	reconciler.MailSender = func(string, string, string) error {
+		sendAttempts++
+		return errors.New("smtp unavailable")
+	}
+
+	monitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			DiscoverInternal: true,
+			SendMail:         true,
+			EmailCoolDown:    86400,
+		},
+	}
+
+	statuses, err := reconciler.discoverInternalCerts(context.Background(), monitor)
+	if err != nil {
+		t.Fatalf("discoverInternalCerts() error = %v", err)
+	}
+	if sendAttempts != 1 {
+		t.Fatalf("send attempts = %d, want 1", sendAttempts)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %d, want 1", len(statuses))
+	}
+	if statuses[0].EmailSent {
+		t.Fatal("failed send was marked as sent")
+	}
+	if statuses[0].LastEmailSentAt != "" {
+		t.Fatalf("LastEmailSentAt = %q, want empty", statuses[0].LastEmailSentAt)
+	}
+	if statuses[0].Status != expiring {
+		t.Fatalf("status = %q, want %q", statuses[0].Status, expiring)
+	}
+}
+
+func TestDiscoverInternalCertsMarksSuccessfulSend(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	secret := newTLSTestSecret(t, "default", "tls-expiring", now.Add(10*24*time.Hour))
+	reconciler := newTestReconciler(t, now, []client.Object{secret, newRecipientsConfigMap()})
+	reconciler.MailSender = func(string, string, string) error { return nil }
+
+	monitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			DiscoverInternal: true,
+			SendMail:         true,
+			EmailCoolDown:    86400,
+		},
+	}
+
+	statuses, err := reconciler.discoverInternalCerts(context.Background(), monitor)
+	if err != nil {
+		t.Fatalf("discoverInternalCerts() error = %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %d, want 1", len(statuses))
+	}
+	if !statuses[0].EmailSent {
+		t.Fatal("successful send was not marked as sent")
+	}
+	if statuses[0].LastEmailSentAt != now.Format(time.RFC3339) {
+		t.Fatalf("LastEmailSentAt = %q, want %q", statuses[0].LastEmailSentAt, now.Format(time.RFC3339))
+	}
+}
+
+func TestDiscoverInternalCertsRefreshesStatusDuringCooldown(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	secret := newTLSTestSecret(t, "default", "tls-now-expired", now.Add(-time.Hour))
+	reconciler := newTestReconciler(t, now, []client.Object{secret, newRecipientsConfigMap()})
+	sendAttempts := 0
+	reconciler.MailSender = func(string, string, string) error {
+		sendAttempts++
+		return nil
+	}
+
+	previousLastSent := now.Add(-time.Hour)
+	monitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			DiscoverInternal: true,
+			SendMail:         true,
+			EmailCoolDown:    86400,
+		},
+		Status: monitoringv1alpha1.CertificateMonitorStatus{
+			MonitoredCertificates: []monitoringv1alpha1.MonitoredCertificateStatus{
+				{
+					Name:            "internal-default.tls-now-expired",
+					Status:          expiring,
+					Expiry:          now.Add(24 * time.Hour).Format(time.RFC3339),
+					Namespace:       "default",
+					EmailSent:       true,
+					LastEmailSentAt: previousLastSent.Format(time.RFC3339),
+				},
+			},
+		},
+	}
+
+	statuses, err := reconciler.discoverInternalCerts(context.Background(), monitor)
+	if err != nil {
+		t.Fatalf("discoverInternalCerts() error = %v", err)
+	}
+	if sendAttempts != 0 {
+		t.Fatalf("send attempts = %d, want 0 during cooldown", sendAttempts)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %d, want 1", len(statuses))
+	}
+	if statuses[0].Status != expired {
+		t.Fatalf("status = %q, want fresh status %q", statuses[0].Status, expired)
+	}
+	if statuses[0].Expiry != now.Add(-time.Hour).Format(time.RFC3339) {
+		t.Fatalf("Expiry = %q, want refreshed expiry", statuses[0].Expiry)
+	}
+	if !statuses[0].EmailSent {
+		t.Fatal("previous email metadata was not preserved during cooldown")
+	}
+	if statuses[0].LastEmailSentAt != previousLastSent.Format(time.RFC3339) {
+		t.Fatalf("LastEmailSentAt = %q, want %q", statuses[0].LastEmailSentAt, previousLastSent.Format(time.RFC3339))
+	}
+}
+
+func TestDiscoverInternalCertsContinuesWhenRecipientsAreMissing(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	secret := newTLSTestSecret(t, "default", "tls-expired", now.Add(-time.Hour))
+	reconciler := newTestReconciler(t, now, []client.Object{secret})
+	sendAttempts := 0
+	reconciler.MailSender = func(string, string, string) error {
+		sendAttempts++
+		return nil
+	}
+
+	monitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			DiscoverInternal: true,
+			SendMail:         true,
+			EmailCoolDown:    86400,
+		},
+	}
+
+	statuses, err := reconciler.discoverInternalCerts(context.Background(), monitor)
+	if err != nil {
+		t.Fatalf("discoverInternalCerts() error = %v", err)
+	}
+	if sendAttempts != 0 {
+		t.Fatalf("send attempts = %d, want 0 without recipients", sendAttempts)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("statuses = %d, want 1 despite missing recipients", len(statuses))
+	}
+	if statuses[0].EmailSent {
+		t.Fatal("email marked as sent without recipients")
+	}
+}
+
+func TestGetRecipientsUsesConfiguredConfigMap(t *testing.T) {
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-recipients", Namespace: "ops"},
+		Data:       map[string]string{"emails": `["ops@example.com"]`},
+	}
+	reconciler := newTestReconciler(t, time.Now(), []client.Object{configMap})
+	monitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			EmailRecipientsConfigMap: "custom-recipients",
+			EmailRecipientsNamespace: "ops",
+		},
+	}
+
+	recipients, err := reconciler.getRecipients(context.Background(), monitor)
+	if err != nil {
+		t.Fatalf("getRecipients() error = %v", err)
+	}
+	if len(recipients) != 1 || recipients[0] != "ops@example.com" {
+		t.Fatalf("recipients = %v, want [ops@example.com]", recipients)
+	}
+}
+
+func newTestReconciler(t *testing.T, now time.Time, objects []client.Object) *CertificateMonitorReconciler {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add corev1 scheme: %v", err)
+	}
+	if err := monitoringv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add monitoring scheme: %v", err)
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&corev1.Secret{}, "type", func(obj client.Object) []string {
+			secret, ok := obj.(*corev1.Secret)
+			if !ok {
+				return nil
+			}
+			return []string{string(secret.Type)}
+		}).
+		WithObjects(objects...).
+		Build()
+
+	return &CertificateMonitorReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		Now:    func() time.Time { return now },
+	}
+}
+
+func newTLSTestSecret(t *testing.T, namespace, name string, notAfter time.Time) *corev1.Secret {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "example.com"},
+		NotBefore:    notAfter.Add(-24 * time.Hour),
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Type:       corev1.SecretTypeTLS,
+		Data: map[string][]byte{
+			"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		},
+	}
+}
+
+func newRecipientsConfigMap() *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "email-recipients-config", Namespace: "default"},
+		Data:       map[string]string{"emails": `["alerts@example.com"]`},
+	}
+}

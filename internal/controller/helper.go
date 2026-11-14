@@ -103,20 +103,35 @@ func (r *CertificateMonitorReconciler) getExternalCertExpiry(url string) (time.T
 	return cert.NotAfter, nil
 }
 
-// funcion para obtener la lista de recipients del config map
-func (r *CertificateMonitorReconciler) getRecipients(ctx context.Context) ([]string, error) {
-	// Parse email recipients
-	log := log.FromContext(context.Background())
+const defaultRecipientsConfigMap = "email-recipients-config"
+
+// getRecipients returns the configured email recipients. The ConfigMap is
+// resolved from the CertificateMonitor spec, defaulting to the monitor's
+// namespace and the standard ConfigMap name.
+func (r *CertificateMonitorReconciler) getRecipients(ctx context.Context, certmonitor *monitoringv1alpha1.CertificateMonitor) ([]string, error) {
+	log := log.FromContext(ctx)
+
+	configMapName := certmonitor.Spec.EmailRecipientsConfigMap
+	if configMapName == "" {
+		configMapName = defaultRecipientsConfigMap
+	}
+	configMapNamespace := certmonitor.Spec.EmailRecipientsNamespace
+	if configMapNamespace == "" {
+		configMapNamespace = certmonitor.Namespace
+	}
+
 	// Fetch the ConfigMap with email recipients
 	var configMap corev1.ConfigMap
-	if err := r.Get(ctx, types.NamespacedName{Name: r.ConfigMapName, Namespace: "default"}, &configMap); err != nil {
-		log.Error(err, "unable to fetch ConfigMap for email recipients")
+	if err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: configMapNamespace}, &configMap); err != nil {
+		log.Error(err, "unable to fetch ConfigMap for email recipients",
+			"name", configMapName, "namespace", configMapNamespace)
 		return nil, err
 	}
 
 	var recipients []string
 	if err := json.Unmarshal([]byte(configMap.Data["emails"]), &recipients); err != nil {
-		log.Error(err, "unable to parse email recipients from ConfigMap")
+		log.Error(err, "unable to parse email recipients from ConfigMap",
+			"name", configMapName, "namespace", configMapNamespace)
 		return nil, err
 	}
 	return recipients, nil

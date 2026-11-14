@@ -49,6 +49,13 @@ type CertificateMonitorSpec struct {
 	// +kubebuilder:default=86400
 	// +kubebuilder:validation:Minimum=0
 	EmailCoolDown int `json:"emailcooldown,omitempty"`
+	// EmailRecipientsConfigMap is the name of the ConfigMap containing the
+	// JSON list of email recipients under the "emails" key.
+	// +kubebuilder:default=email-recipients-config
+	EmailRecipientsConfigMap string `json:"emailRecipientsConfigMap,omitempty"`
+	// EmailRecipientsNamespace is the namespace of the recipients ConfigMap.
+	// It defaults to the namespace of the CertificateMonitor object.
+	EmailRecipientsNamespace string `json:"emailRecipientsNamespace,omitempty"`
 }
 
 // MonitoredCertificateStatus represents the status of a monitored certificate.
