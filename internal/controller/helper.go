@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"net/http"
 	"time"
 
 	monitoringv1alpha1 "egarciam.com/checkcert/api/v1alpha1"
@@ -91,18 +90,6 @@ func getCertificateStatus(expiry, now time.Time, thresholdDays int) string {
 		return expiring
 	}
 	return valid
-}
-
-// getExternalCertExpiry fetches the expiry date from an external HTTPS endpoint.
-func (r *CertificateMonitorReconciler) getExternalCertExpiry(url string) (time.Time, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return time.Time{}, err
-	}
-	defer resp.Body.Close()
-
-	cert := resp.TLS.PeerCertificates[0]
-	return cert.NotAfter, nil
 }
 
 const defaultRecipientsConfigMap = "email-recipients-config"
