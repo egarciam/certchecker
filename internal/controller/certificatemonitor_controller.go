@@ -23,14 +23,17 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"time"
 
@@ -258,20 +261,108 @@ func (r *CertificateMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	}
 	r.Recorder = mgr.GetEventRecorderFor("certificatemonitor-controller")
 
-	// Predicate to ignore status updates
+	// Predicate to ignore status updates. Generation only changes when the
+	// spec changes, so metadata-only updates are ignored too.
 	statusUpdatePredicate := predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			// Only reconcile if the spec or metadata changes
 			oldResource := e.ObjectOld.DeepCopyObject().(*monitoringv1alpha1.CertificateMonitor)
 			newResource := e.ObjectNew.DeepCopyObject().(*monitoringv1alpha1.CertificateMonitor)
 			return oldResource.Generation != newResource.Generation
 		},
 	}
 
+	isTLSSecret := func(obj client.Object) bool {
+		secret, ok := obj.(*corev1.Secret)
+		return ok && secret.Type == corev1.SecretTypeTLS
+	}
+	tlsSecretPredicate := predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return isTLSSecret(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return isTLSSecret(e.ObjectOld) || isTLSSecret(e.ObjectNew) },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return isTLSSecret(e.Object) },
+		GenericFunc: func(e event.GenericEvent) bool { return isTLSSecret(e.Object) },
+	}
+
+	hasRecipients := func(obj client.Object) bool {
+		configMap, ok := obj.(*corev1.ConfigMap)
+		if !ok {
+			return false
+		}
+		_, ok = configMap.Data["emails"]
+		return ok
+	}
+	recipientsConfigMapPredicate := predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return hasRecipients(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return hasRecipients(e.ObjectOld) || hasRecipients(e.ObjectNew) },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return hasRecipients(e.Object) },
+		GenericFunc: func(e event.GenericEvent) bool { return hasRecipients(e.Object) },
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&monitoringv1alpha1.CertificateMonitor{},
 			builder.WithPredicates(statusUpdatePredicate)).
+		Watches(&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.mapSecretToMonitors),
+			builder.WithPredicates(tlsSecretPredicate)).
+		Watches(&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.mapRecipientsConfigMapToMonitors),
+			builder.WithPredicates(recipientsConfigMapPredicate)).
 		Complete(r)
+}
+
+// mapSecretToMonitors enqueues every CertificateMonitor when a TLS Secret
+// changes. Discovery is cluster-wide, so every monitor is affected.
+func (r *CertificateMonitorReconciler) mapSecretToMonitors(ctx context.Context, _ client.Object) []reconcile.Request {
+	return r.allMonitorRequests(ctx)
+}
+
+// mapRecipientsConfigMapToMonitors enqueues only the monitors that use the
+// changed recipients ConfigMap.
+func (r *CertificateMonitorReconciler) mapRecipientsConfigMapToMonitors(ctx context.Context, obj client.Object) []reconcile.Request {
+	configMap, ok := obj.(*corev1.ConfigMap)
+	if !ok {
+		return nil
+	}
+
+	var monitors monitoringv1alpha1.CertificateMonitorList
+	if err := r.List(ctx, &monitors); err != nil {
+		log.FromContext(ctx).Error(err, "unable to list CertificateMonitors")
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(monitors.Items))
+	for _, monitor := range monitors.Items {
+		name := monitor.Spec.EmailRecipientsConfigMap
+		if name == "" {
+			name = defaultRecipientsConfigMap
+		}
+		namespace := monitor.Spec.EmailRecipientsNamespace
+		if namespace == "" {
+			namespace = monitor.Namespace
+		}
+		if configMap.Name == name && configMap.Namespace == namespace {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: monitor.Name, Namespace: monitor.Namespace},
+			})
+		}
+	}
+	return requests
+}
+
+// allMonitorRequests returns reconcile requests for every CertificateMonitor.
+func (r *CertificateMonitorReconciler) allMonitorRequests(ctx context.Context) []reconcile.Request {
+	var monitors monitoringv1alpha1.CertificateMonitorList
+	if err := r.List(ctx, &monitors); err != nil {
+		log.FromContext(ctx).Error(err, "unable to list CertificateMonitors")
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(monitors.Items))
+	for _, monitor := range monitors.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: monitor.Name, Namespace: monitor.Namespace},
+		})
+	}
+	return requests
 }
 
 // sendMails sends one email per recipient for a certificate that needs attention.

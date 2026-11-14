@@ -283,6 +283,55 @@ func TestDiscoverInternalCertsContinuesWhenRecipientsAreMissing(t *testing.T) {
 	}
 }
 
+func TestMapSecretToMonitors(t *testing.T) {
+	monitor1 := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: "team-a"},
+	}
+	monitor2 := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Name: "second", Namespace: "team-b"},
+	}
+	reconciler := newTestReconciler(t, time.Now(), []client.Object{monitor1, monitor2})
+
+	requests := reconciler.mapSecretToMonitors(context.Background(), &corev1.Secret{
+		Type: corev1.SecretTypeTLS,
+	})
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+}
+
+func TestMapRecipientsConfigMapToMonitors(t *testing.T) {
+	defaultConfigMonitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Name: "default-config", Namespace: "team-a"},
+	}
+	customConfigMonitor := &monitoringv1alpha1.CertificateMonitor{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-config", Namespace: "team-b"},
+		Spec: monitoringv1alpha1.CertificateMonitorSpec{
+			EmailRecipientsConfigMap: "custom-recipients",
+			EmailRecipientsNamespace: "ops",
+		},
+	}
+	reconciler := newTestReconciler(t, time.Now(), []client.Object{defaultConfigMonitor, customConfigMonitor})
+
+	defaultConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "email-recipients-config", Namespace: "team-a"},
+		Data:       map[string]string{"emails": `["team-a@example.com"]`},
+	}
+	requests := reconciler.mapRecipientsConfigMapToMonitors(context.Background(), defaultConfigMap)
+	if len(requests) != 1 || requests[0].Namespace != "team-a" || requests[0].Name != "default-config" {
+		t.Fatalf("default config requests = %+v, want only team-a/default-config", requests)
+	}
+
+	customConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-recipients", Namespace: "ops"},
+		Data:       map[string]string{"emails": `["ops@example.com"]`},
+	}
+	requests = reconciler.mapRecipientsConfigMapToMonitors(context.Background(), customConfigMap)
+	if len(requests) != 1 || requests[0].Namespace != "team-b" || requests[0].Name != "custom-config" {
+		t.Fatalf("custom config requests = %+v, want only team-b/custom-config", requests)
+	}
+}
+
 func TestGetRecipientsUsesConfiguredConfigMap(t *testing.T) {
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "custom-recipients", Namespace: "ops"},
