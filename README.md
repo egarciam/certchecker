@@ -2,7 +2,20 @@
 The purpose of this project is to create a CRD to hold the validity of secrets of type `kubernetes.io/tls` in a k8s cluster to check expiry date and, depending on threshold, send a warning mail.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+The operator reconciles `CertificateMonitor` objects. When `discoverInternal` is enabled, it
+lists `kubernetes.io/tls` Secrets across the cluster, parses `tls.crt`, writes expiring and
+expired certificates to `.status.monitoredCertificates`, and optionally sends SMTP alerts.
+
+### Monitoring scope
+
+The `CertificateMonitor` CR is namespaced, but certificate discovery is cluster-wide. Run a
+single `CertificateMonitor` per cluster: multiple instances inspect the same Secrets and can
+send duplicate notifications. Namespace-scoped discovery is a possible future mode.
+
+The recipients ConfigMap is resolved from `spec.emailRecipientsConfigMap` and
+`spec.emailRecipientsNamespace`. Both default to `email-recipients-config` in the namespace of
+the `CertificateMonitor` object.
 
 ## Getting Started
 

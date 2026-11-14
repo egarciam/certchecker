@@ -9,8 +9,11 @@ metadata:
     app.kubernetes.io/created-by: check-certs
   name: certificatemonitor-sample
 spec:
-  # TODO(user): Add fields here
   discoverInternal: true
   sendMail: true
   checkInterval: 15
+  # Recipients ConfigMap. The namespace defaults to the namespace of this
+  # CertificateMonitor, and the name defaults to email-recipients-config.
+  emailRecipientsConfigMap: email-recipients-config
+  emailRecipientsNamespace: default
 

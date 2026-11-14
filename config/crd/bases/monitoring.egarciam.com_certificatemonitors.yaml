@@ -50,6 +50,17 @@ spec:
                 default: false
                 description: Certificates     []CertificateSpec `json:"certificates"`
                 type: boolean
+              emailRecipientsConfigMap:
+                default: email-recipients-config
+                description: |-
+                  EmailRecipientsConfigMap is the name of the ConfigMap containing the
+                  JSON list of email recipients under the "emails" key.
+                type: string
+              emailRecipientsNamespace:
+                description: |-
+                  EmailRecipientsNamespace is the namespace of the recipients ConfigMap.
+                  It defaults to the namespace of the CertificateMonitor object.
+                type: string
               emailcooldown:
                 default: 86400
                 minimum: 0

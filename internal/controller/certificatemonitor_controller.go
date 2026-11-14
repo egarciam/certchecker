@@ -41,9 +41,8 @@ import (
 // CertificateMonitorReconciler reconciles a CertificateMonitor object
 type CertificateMonitorReconciler struct {
 	client.Client
-	ConfigMapName string // Name of the ConfigMap to fetch recipients
-	Scheme        *runtime.Scheme
-	Recorder      record.EventRecorder
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 	// Now returns the current time. It is overridable for tests.
 	Now func() time.Time
 	// MailSender sends an email. It is overridable for tests.
@@ -163,7 +162,7 @@ func (r *CertificateMonitorReconciler) discoverInternalCerts(ctx context.Context
 	if certmonitor.Spec.SendMail {
 		log.Info("SendMail", fmt.Sprintf("%v", certmonitor.Spec.SendMail), "Envio de correo activo - habra que enviar correo con estado de los certificados")
 		var err error
-		recipients, err = r.getRecipients(ctx)
+		recipients, err = r.getRecipients(ctx, certmonitor)
 		if err != nil {
 			// Do not abort discovery: status is still useful even when mail is
 			// misconfigured. The event makes the configuration problem visible.
@@ -257,7 +256,6 @@ func (r *CertificateMonitorReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	}); err != nil {
 		return err
 	}
-	r.ConfigMapName = "email-recipients-config" // ConfigMap name with email recipients
 	r.Recorder = mgr.GetEventRecorderFor("certificatemonitor-controller")
 
 	// Predicate to ignore status updates
